@@ -1,0 +1,106 @@
+---
+title: "Analysis"
+author: "Matti Vuorre"
+format: html
+---
+
+```{r setup}
+#| include: false
+library(tidyverse)
+library(jsonlite)
+library(lubridate)
+library(janitor)
+```
+
+# Merge datasets
+
+## Qualtrics
+
+```{r}
+q <- read_csv("data-raw/qualtrics-staging.csv", name_repair = make_clean_names)
+q <- q %>% 
+  rename(
+    pid = entity_id,
+    timestamp = time_stamp_01_00_gmt
+    ) %>% 
+  # Fill age and gender variables to all rows of a participant
+  group_by(pid) %>% 
+  fill(age, gender) %>% 
+  ungroup() %>% 
+  # Now we don't need the separate age and gender response row
+  filter(prompt_type != "age_gender_submitted") %>% 
+  # Take relevant variables
+  select(
+    pid, age, gender, timestamp, prompt_type, prompt_category, response
+  )
+glimpse(q)
+```
+
+## Playfab
+
+```{r}
+p <- read_csv("data-raw/playfab-staging.csv", name_repair = make_clean_names) %>% 
+  select(name = full_name_name, eid = entity_id, data = event_data)
+# Create a data frame for each event type
+p <- p %>% 
+  mutate(data = map(data, fromJSON))
+p <- p %>% 
+  group_by(name)
+ns <- group_keys(p)$name
+p <- group_split(p)
+names(p) <- ns
+ns
+# Flatten each event type's JSON data
+p <- lapply(p, function(x) unnest_wider(x, data, names_repair = make_clean_names))
+
+# Add qualtrics matching ID to each event's table
+lookup <- p$player_logged_in %>% 
+  distinct(eid, platform_user_id) %>% 
+  rename(pid = platform_user_id)
+p <- lapply(p, function(x) left_join(x, lookup))
+
+# Fix time stamps
+p <- lapply(p, function(x) mutate(x, timestamp = as_datetime(timestamp)))
+```
+
+## Event timeseries
+
+The in game events are now across tables. Combine into timeseries
+
+```{r}
+# Combine all gameplay events -- remove list column
+d <- bind_rows(
+  p$player_logged_in,
+  p$item_purchased,
+  p$job_started,
+  p$job_completed,
+  p$game_saved,
+  p$job_exited %>% select(-current_career_jobs_in_progress),
+  p$job_resumed %>% select(-current_career_jobs_in_progress),
+  p$level_progressed,
+  p$study_prompt_answered,
+  p$mood_reported %>% select(-current_career_jobs_in_progress),
+  p$subtask_completed,
+  p$task_completed %>% select(-crouch_state),
+  p$exited_game %>% select(-current_career_jobs_in_progress)
+)
+
+# Select variables
+d <- d %>% 
+  select(
+    pid, timestamp, name, 
+    level_progression_amount,
+    current_session_length, 
+    campaign_progression_amount,
+    starts_with("current"), 
+    starts_with("last"),
+    multiplayer_mode, crouch_state
+  )
+
+# Arrange on person and time
+d <- d %>% 
+  arrange(pid, timestamp)
+```
+
+
+
