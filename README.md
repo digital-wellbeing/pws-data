@@ -1,4 +1,8 @@
+# PowerWash Simulator dataset
 
-# A study of PowerWash Simulator 
+This repository contains the cleaned data from the PowerWash Simulator study.
 
-work in progress :)
+- `data-raw/` is not publicly available
+  - Our scripts load the raw data from here and place it to `data/`
+- `data/`
+  - The processed datasets
