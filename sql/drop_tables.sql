@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS pws, pws_s3, tmp;
