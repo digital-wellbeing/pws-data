@@ -9,3 +9,7 @@ export-csv:
 
 drop-tables:
 	docker exec -i pws_postgres /usr/bin/psql -U postgres -f sql/drop_tables.sql
+
+move-s3-imported:
+	rsync --remove-source-files --recursive --checksum --verbose data-raw/playfab-s3/ data-raw/imported/playfab-s3/
+	
