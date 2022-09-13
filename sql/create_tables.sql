@@ -37,3 +37,45 @@ CREATE TABLE IF NOT EXISTS pws (
 CREATE TABLE pws_s3 AS 
 TABLE pws 
 WITH NO DATA;
+CREATE TABLE IF NOT EXISTS pws_device_info (
+  	"OxfordStudyEntityId" text, 
+    "EntityId" text,
+    "EventId" text,
+    "Platform" text,
+    "Version" text,
+    "SupportsLocationService" boolean,
+    "GraphicsMultiThreaded" boolean,
+    "SupportsAccelerometer" boolean,
+    "StreamingAssetsPath" text,
+    "GraphicsShaderLevel" int,
+    "GraphicsDeviceName" text,
+    "GraphicsMemorySize" int,
+    "PersistentDataPath" text,
+    "ProcessorFrequency" int,
+    "SupportsGyroscope" boolean,
+    "GraphicsDeviceId" int,
+    "SystemMemorySize" int,
+    "OperatingSystem" text,
+    "TargetFrameRate" int,
+    "RunInBackground" boolean,
+    "DeviceUniqueId" text,
+    "ProcessorCount" int,
+    "ContinentCode" int,
+    "CountryCode" int,
+    "Longitude" real,
+    "Latitude" real,
+    "City" text,
+    "IP" text,
+    "ProcessorType" text,
+    "UnityVersion" text,
+    "GraphicsType" text,
+    "DeviceModel" text,
+    "DeviceType" text,
+    "UserAgent" text,
+    "DataPath" text,
+    "PlayerIP" text,
+    "Timestamp" timestamp
+);
+CREATE TABLE pws_device_info_s3 AS 
+TABLE pws_device_info 
+WITH NO DATA;

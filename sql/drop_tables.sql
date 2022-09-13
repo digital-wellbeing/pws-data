@@ -1,1 +1,1 @@
-DROP TABLE IF EXISTS pws, pws_s3, tmp;
+DROP TABLE IF EXISTS pws, pws_s3, pws_device_info, pws_device_info_s3, tmp;

@@ -1,11 +1,19 @@
+define export_table_to_csv
+	docker exec -i pws_postgres /usr/bin/psql -U postgres -c '\copy $(1) to STDIN CSV HEADER;' \
+	| gzip > data-raw/export-$(1).csv.gz
+
+endef
+
 import:
 	./import.sh
 	./import_s3.sh
 	docker exec -i pws_postgres /usr/bin/psql -U postgres -f sql/insert_s3.sql
 
 export-csv:
-	docker exec -i pws_postgres /usr/bin/psql -U postgres -c '\copy pws to STDIN CSV HEADER;' \
-	| gzip > data-raw/export.csv.gz
+	$(call export_table_to_csv,pws)
+
+export-csv-device-info:
+	$(call export_table_to_csv,pws_device_info)
 
 drop-tables:
 	docker exec -i pws_postgres /usr/bin/psql -U postgres -f sql/drop_tables.sql
