@@ -5,9 +5,10 @@ CREATE TABLE IF NOT EXISTS tmp (
 );
 CREATE TABLE IF NOT EXISTS pws (
 	"OxfordStudyEntityId" text, 
+	  "OxfordStudyLocalTimeStamp" timestamp,
+	  "OxfordStudyEventId" text,
     "EventName" text,
    	"EntityType" text, 
-    "EventId" text,
     "EntityId" text,
     "LevelProgressionAmount" real,
     "CurrentJobName" text,
