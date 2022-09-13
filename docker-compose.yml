@@ -8,6 +8,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       PGDATA: /data/postgres
+    ports:
+      - 5432:5432
     volumes:
        - postgres:/data/postgres
        - ./export:/export
