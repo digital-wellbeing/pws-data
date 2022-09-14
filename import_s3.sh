@@ -10,12 +10,15 @@ for file in $files; do
     gunzip -c "${ONEDRIVE_PATH_S3}${file}" | jq -c '.EventData' | docker exec -i pws_postgres /usr/bin/psql -U postgres -c 'COPY tmp (data) FROM STDIN'
     docker exec -i pws_postgres /usr/bin/psql -U postgres --set=pwstable='pws_s3' --set=devicetable='pws_device_info_s3' -f sql/import.sql
 done
-echo "Do you whish to update 'imported_s3.txt'?"
-select yn in "Yes" "No"; do
-    case $yn in
-        Yes ) mv data-raw/imported_s3.txt data-raw/imported_s3.txt.bak;
-            echo "$all" > data-raw/imported_s3.txt; 
-            break;;
-        No ) exit;;
-    esac
-done
+
+# Check if we have new files
+# if we have new files update imported_s3.txt and insert data into pws table
+if [[ -z $(echo "$files" | grep ".json.gz") ]]
+then
+  echo "No new files" 
+else
+  docker exec -i pws_postgres /usr/bin/psql -U postgres -f sql/insert_s3.sql
+  echo "New files imported"
+  mv data-raw/imported_s3.txt data-raw/imported_s3.txt.bak
+  echo "$all" > data-raw/imported_s3.txt 
+fi

@@ -7,7 +7,6 @@ endef
 import:
 	./import.sh
 	./import_s3.sh
-	docker exec -i pws_postgres /usr/bin/psql -U postgres -f sql/insert_s3.sql
 
 export-csv:
 	$(call export_table_to_csv,pws)
