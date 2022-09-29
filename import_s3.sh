@@ -1,5 +1,6 @@
 #!/bin/bash
 source .env
+ONEDRIVE_PATH_S3="$ONEDRIVE_PATH/data-raw/playfab-s3/"
 echo "OneDrive S3 Path:" $ONEDRIVE_PATH_S3
 all=$(find "$ONEDRIVE_PATH_S3" -name '*.json.gz' | awk -F "/playfab-s3/" '{print $2}' | sort)
 imported=$(cat data-raw/imported_s3.txt)

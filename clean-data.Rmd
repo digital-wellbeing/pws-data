@@ -1,0 +1,31 @@
+---
+title: "Preprocess data"
+output: html_document
+date: "2022"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+```
+
+# Qualtrics
+
+```{r}
+readRenviron(".env") # Read files from common OneDrive path
+list.files(
+  paste0(Sys.getenv("ONEDRIVE_PATH"), "data-raw/qualtrics/"),
+  full.names = TRUE
+) %>% 
+  read_csv(
+    col_types = cols_only(
+      eventId = col_character(),
+      entityId = col_character(),
+      timeStamp = col_character(),
+      age = col_integer(),
+      gender = col_character(),
+      promptType = col_character(),
+      promptCategory = col_character(),
+      response = col_double()  # Throws warnings for 'none' responses
+    )
+  )
+```
