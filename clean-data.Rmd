@@ -254,3 +254,94 @@ dq <- dq %>%
   )
 ```
 
+
+# Join
+
+## Harmonise names
+
+Before joining the tables we create common names for variables.
+
+```{r}
+d <- clean_names(d) %>% 
+  select(
+    pid = oxford_study_entity_id,
+    timestamp,
+    timestamp_qts = oxford_study_local_time_stamp,
+    timestamp_utc,
+    event_name,
+    prompt = last_study_prompt_type,
+    order(colnames(d)),
+    -c(entity_type, multiplayer_mode, offset, oxford_study_event_id)
+  )
+
+dq <- dq %>% 
+  rename(
+    pid = entityId,
+    timestamp_qts = timeStamp,
+    prompt = promptCategory
+  )
+```
+
+## Define participant
+
+In order for the data to be meaningful, participants must have data in both tables
+
+```{r}
+before <- length(unique(d$pid))
+d <- inner_join(
+  d,
+  distinct(dq, pid)
+)
+after <- length(unique(d$pid))
+```
+
+We removed `r before-after` players with telemetry only.
+
+## Perform join
+
+We then join the qualtrics survey data to the telemetry data. We treat the PlayFab telemetry as the primary table, because i. it contains the rest of the data (not just survey events), and ii. the Qualtrics survey data has large numbers of duplicated responses (some bug in sending data from PWS to the Qualtrics API), and treating it as secondary makes it easier to remove the duplicates automatically.
+
+We work only on the survey event telemetry (because it is the only data that can join)
+
+```{r}
+dp <- d %>% 
+  filter(event_name %in% c("mood_reported", "study_prompt_answered"))
+d <- anti_join(d, dp) # Rest of playfab data
+```
+
+We join playfab (x) and qualtrics (y) first by joining with the common timestamp. That however doesn't exist in old data, for which we use the adjusted timestamps. That can also fail because of incorrectly configured clocks, VPNs, etc. So we join the remainder by unique prompt types and the mm:ss of the timestamps.
+
+### 1. Join by common timestamp
+
+Join on `timestamp_qts` when it exists in x. This ensures exact matches. This variable does not exist in oldest data and therefore doesn't work on all rows. We use `inner_join()` to keep matching rows only, and will use other methods below to deal with the dropped rows.
+
+```{r}
+dat1 <- inner_join(
+  drop_na(dp, timestamp_qts),
+  dq
+)
+```
+
+Summarise matches and verify that no participant has more rows after joining (this would show as negative values of `dropped` below)
+
+```{r}
+full_join(
+  count(dp, pid),
+  count(dat1, pid, name = "n1")
+) %>% 
+  replace_na(list(n = 0, n1 = 0)) %>% 
+  mutate(
+    dropped = n-n1, 
+    .keep = "used"
+  ) %>% 
+  summary
+```
+
+We then remove the already-joined rows from the tables
+
+```{r}
+dp <- anti_join(dp, dat1) %>% 
+  # These are all empty due to above
+  select(-timestamp_qts)
+dq <- anti_join(dq, dat1)
+```
