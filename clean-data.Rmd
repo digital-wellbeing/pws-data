@@ -36,6 +36,38 @@ d_device <- tbl(con, "pws_device_info") %>%
   distinct()
 ```
 
+
+## Remove unnecessary data
+
+### Clear data requested
+
+Completely remove data from people who requested it
+
+```{r}
+d <- anti_join(
+  d,
+  d %>% 
+    filter(EventName == "clear_data_requested") %>% 
+    distinct(EntityId)
+)
+```
+
+We only care about player events
+
+```{r}
+d <- d %>% 
+  filter(
+    EntityType == "player",
+    !(EventName %in% c(
+      "player_added_title", 
+      "player_created", 
+      "player_linked_account"
+    ))
+  ) %>% 
+  select(-EntityType)
+```
+
+
 ## Adjust timestamps
 
 We first find timezone offsets
@@ -272,6 +304,7 @@ d <- clean_names(d) %>%
     prompt = last_study_prompt_type,
     order(colnames(d)),
     -c(entity_type, multiplayer_mode, offset, oxford_study_event_id)
+    -c(multiplayer_mode, offset, oxford_study_event_id)
   )
 
 dq <- dq %>% 
