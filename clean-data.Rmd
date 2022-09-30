@@ -5,27 +5,252 @@ date: "2022"
 ---
 
 ```{r setup, include=FALSE}
+library(janitor)
+library(knitr)
+library(scales)
+library(lubridate)
+library(DBI)
+library(dbplyr)
+library(lutz)
 library(tidyverse)
+```
+
+# PlayFab
+
+## Load data
+
+```{r}
+# Connect to local database
+con <- dbConnect(
+  RPostgres::Postgres(),
+  dbname = "postgres",
+  host = "localhost",
+  port = 5432,
+  user = "postgres",
+  password = "postgres"
+)
+d <- tbl(con, "pws") %>% 
+  collect()
+d_device <- tbl(con, "pws_device_info") %>% 
+  collect() %>% 
+  distinct()
+```
+
+## Adjust timestamps
+
+We first find timezone offsets
+
+```{r}
+# Find timezones
+offsets <- d_device %>% 
+  select(
+    EntityId,
+    Timestamp,
+    Longitude,
+    Latitude
+  ) %>% 
+  mutate(
+    tz = tz_lookup_coords(Latitude, Longitude, method = "accurate")
+  )
+
+# In hits with multiple timezones, pick first
+offsets <- offsets %>% 
+  mutate(
+    tz = if_else(
+      str_detect(tz, ";"), 
+      str_split_fixed(tz, ";", 2)[1],
+      tz
+    )
+  )
+
+# This is slow so do only for unique timezone-date pairs
+tmp <- offsets %>% 
+  mutate(date = ymd(str_sub(Timestamp, 1, 10))) %>%
+  distinct(date, tz) %>%
+  mutate(
+    offset = map2_dbl(date, tz, ~tz_offset(.x, .y)$utc_offset_h)
+  )
+offsets <- offsets %>% 
+  mutate(date = ymd(str_sub(Timestamp, 1, 10))) %>% 
+  left_join(tmp) %>% 
+  select(-c(date, Longitude, Latitude, tz))
+rm(tmp)
+```
+
+Then join those offsets to the main data
+
+```{r}
+d <- bind_rows(
+  d %>% 
+    mutate(across(starts_with("Current"), as.character)),
+  offsets %>% 
+    mutate(EventName = "player_device_info")
+) %>% 
+  arrange(EntityId, Timestamp)
+rm(offsets)
+```
+
+Fill offsets to player's following events, until the next offset. Then do it again but fill up to fill any remaining rows.
+
+```{r}
+d <- d %>% 
+  group_by(EntityId) %>% 
+  fill(offset, .direction = "downup") %>% 
+  ungroup()
+```
+
+Create a new timestamp reflecting local time
+
+```{r}
+d <- d %>% 
+  mutate(timestamp = Timestamp + offset*3600) %>% 
+  rename(timestamp_utc = Timestamp)
+```
+
+We can then remove the `player_device_info` events.
+
+```{r}
+d <- d %>% 
+  filter(EventName != "player_device_info")
+```
+
+
+## Cleaning
+
+### Clear data requested
+
+Completely remove data from people who requested it
+
+```{r}
+d <- anti_join(
+  d,
+  d %>% 
+    filter(EventName == "clear_data_requested") %>% 
+    distinct(EntityId)
+)
+```
+
+
+### Person IDs
+
+We have two person identifiers `EntityId` (exists on all rows) and `OxfordStudyEntityId` (doesn't exist on all rows). Only the latter exists in the survey data, so we fill it to every row, and remove the unnecessary identifier.
+
+```{r}
+d <- d %>% 
+  group_by(EntityId) %>% 
+  fill(OxfordStudyEntityId, .direction = "downup") %>% 
+  ungroup() %>% 
+  select(-EntityId)
+```
+
+### Events
+
+The study_prompt_skipped event is actually study_prompt_answered where the response is missing
+
+```{r}
+d <- d %>% 
+  mutate(
+    EventName = if_else(
+      EventName == "study_prompt_skipped", 
+      "study_prompt_answered", 
+      EventName
+    )
+  )
+```
+
+mood_reported events are always wellbeing reports
+
+```{r}
+distinct(d, EventName, LastStudyPromptType)
+d <- d %>% 
+  mutate(
+    LastStudyPromptType = if_else(
+      EventName == "mood_reported", 
+      "Wellbeing", 
+      LastStudyPromptType
+    )
+  )
+```
+
+### Variable types
+
+```{r}
+d <- d %>% 
+  mutate(OxfordStudyLocalTimeStamp = as_datetime(OxfordStudyLocalTimeStamp))
+```
+
+### Duplicated rows
+
+Some rows are duplicated; we only keep unique rows
+
+```{r}
+d <- distinct(d)
 ```
 
 # Qualtrics
 
+## Load data
+
 ```{r}
 readRenviron(".env") # Read files from common OneDrive path
-list.files(
+dq <- list.files(
   paste0(Sys.getenv("ONEDRIVE_PATH"), "data-raw/qualtrics/"),
   full.names = TRUE
 ) %>% 
   read_csv(
     col_types = cols_only(
-      eventId = col_character(),
       entityId = col_character(),
       timeStamp = col_character(),
       age = col_integer(),
       gender = col_character(),
-      promptType = col_character(),
       promptCategory = col_character(),
       response = col_double()  # Throws warnings for 'none' responses
     )
   )
+# Verify that only problem is response='none'
+problems() %>% 
+  distinct(col, expected, actual)
 ```
+
+## Cleaning
+
+```{r}
+# Save demographics in a separate table
+d_person <- dq %>% 
+  filter(is.na(promptCategory)) %>% 
+  distinct(entityId, age, gender)
+# Drop rows where demographics were reported
+dq <- dq %>% 
+  drop_na(promptCategory) %>% 
+  select(-age, -gender)
+
+```
+
+Timestamps are read as strings or it errs on many rows, convert to datetimes here.
+
+```{r}
+dq <- dq %>% 
+  mutate(timeStamp = as_datetime(timeStamp))
+```
+
+There are data without a timestamp -- these are faulty responses between game and APIs. We remove those here.
+
+```{r}
+dq <- dq %>% 
+  drop_na(timeStamp)
+```
+
+We then remove test accounts' data, these were for internal testing purposes
+
+```{r}
+dq <- dq %>% 
+  filter(
+    !(entityId %in% c(
+      "1b4893d8239b65417ea746c92db9c1adc686e8a1", 
+      "47d03dc7c44a9e0a39ba3b5de3650b8f6e41a1d8", 
+      "3086fcd6630a9c61d84884d56e49d34f87127b7d", 
+      "785f413cb080eeac412538dc6424f240feb5b239", 
+      "cc0458b60500702da2faf44e8af870795d7d9b52"))
+  )
+```
+
