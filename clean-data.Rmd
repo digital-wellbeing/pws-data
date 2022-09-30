@@ -29,7 +29,13 @@ con <- dbConnect(
   user = "postgres",
   password = "postgres"
 )
+# Exclude large data for development -- remove for final version
+events <- c(
+  "subtask_completed", 
+  "game_saved"
+)
 d <- tbl(con, "pws") %>% 
+  filter(!(EventName %in% events)) %>% 
   collect()
 d_device <- tbl(con, "pws_device_info") %>% 
   collect() %>% 
