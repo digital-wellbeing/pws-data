@@ -152,22 +152,7 @@ d <- d %>%
   filter(EventName != "player_device_info")
 ```
 
-
 ## Cleaning
-
-### Clear data requested
-
-Completely remove data from people who requested it
-
-```{r}
-d <- anti_join(
-  d,
-  d %>% 
-    filter(EventName == "clear_data_requested") %>% 
-    distinct(EntityId)
-)
-```
-
 
 ### Person IDs
 
@@ -292,6 +277,42 @@ dq <- dq %>%
   )
 ```
 
+### Remove faulty responses
+
+The qualtrics data contains (massively) repeated responses; cases where for some reason the same response was being sent/recorded many times. Not only are these responses physically impossible, they will make the non-equi joins below impossible. These may also have occurred due to cached responses, which would not be found in the PlayFab data. For example:
+
+```{r}
+dq %>% 
+  add_count(entityId, promptCategory, response, name = "repeats") %>% 
+  filter(repeats == max(repeats))
+```
+
+We therefore apply a criterion to the Qualtrics data where subsequent responses from the same participant must be separated by at least one minute.
+
+```{r}
+dq <- arrange(dq, entityId, timeStamp)
+dq <- dq %>% 
+  group_by(entityId) %>% 
+  mutate(
+    lag = difftime(timeStamp, lag(timeStamp), units = "secs")
+  ) %>% 
+  ungroup()
+dq %>% 
+  filter(lag < 60 * 60) %>% 
+  ggplot(aes(lag/60)) +
+  scale_x_continuous(
+    "Lag from previous response (minutes)",
+    breaks = extended_breaks(9)
+  ) +
+  geom_histogram(bins = 100)
+dq %>% 
+  mutate(lag_less = lag < 60) %>% 
+  tabyl(lag_less)
+dq <- dq %>% 
+  filter(lag >= 60) %>% 
+  select(-lag)
+```
+
 
 # Join
 
@@ -309,7 +330,6 @@ d <- clean_names(d) %>%
     event_name,
     prompt = last_study_prompt_type,
     order(colnames(d)),
-    -c(entity_type, multiplayer_mode, offset, oxford_study_event_id)
     -c(multiplayer_mode, offset, oxford_study_event_id)
   )
 
@@ -383,4 +403,113 @@ dp <- anti_join(dp, dat1) %>%
   # These are all empty due to above
   select(-timestamp_qts)
 dq <- anti_join(dq, dat1)
+```
+
+### 2. Join by adjusted timestamp
+
+Join remaining data on `timestamp` and `timestamp_qts` when the latter doesn't exist in x.
+
+However, the two timestamps do not match to the millisecond because of different lags when data is sent from the game to playfab and qualtrics, and clock drift on the local machine. It is also possible that sometimes the timezone adjustment doesn't work because the geoip based location is wrong, or the player has adjusted their clock away from the actual local time.
+
+We therefore do a non-equi join where the adjusted timestamp in x must be within some interval around the qualtrics timestamp for a row to match across x and y. 
+
+Above, we removed rows from qualtrics where the response was within 60 seconds of the previous one. Therefore we use an interval that extends a maximum of |59|s to each side. Below, we see that lengthening the interval would not make a material difference anyway (but would include false alarms due to the 60-second rule).
+
+```{r}
+#' How many rows were dropped and added by an interval
+#'
+#' @param interval length of interval around qualtrics time in seconds
+#'
+#' 30% of the interval is allocated to before, and 70% after the qualtrics timestamp, because the qualtrics timestamp should usually be first
+#'
+#' @return tibble with number of dropped and added rows
+test_join_2 <- function(interval = 119/2) {
+  tmp <- inner_join(
+    dp,
+    dq %>% 
+      mutate(
+        a = timestamp_qts - seconds(interval * .5), 
+        b = timestamp_qts + seconds(interval * .5)
+      ),
+    by = join_by(
+      x$pid == y$pid,
+      x$prompt == y$prompt,
+      between(x$timestamp, y$a, y$b)
+    )
+  )
+  full_join(
+    count(dp, pid),
+    count(tmp, pid, name = "n1"),
+    by = "pid"
+  ) %>% 
+    replace_na(list(n = 0, n1 = 0)) %>% 
+    mutate(dropped = n - n1) %>% 
+    summarise(
+      drops = sum(dropped[sign(dropped)==1]), 
+      adds = abs(sum(dropped[sign(dropped)==-1]))
+    )
+}
+tmp <- tibble(interval = seq(1, 241, by = 20)) %>% 
+  mutate(x = map(interval, test_join_2)) %>% 
+  unnest(x)
+tmp
+```
+
+Based on this we pick a two-minute interval
+
+```{r}
+dat2 <- inner_join(
+  dp,
+  dq %>% 
+    mutate(
+      a = timestamp_qts - seconds(59.9), 
+      b = timestamp_qts + seconds(59.9)
+    ),
+  by = join_by(
+    x$pid == y$pid,
+    x$prompt == y$prompt,
+    between(x$timestamp, y$a, y$b)
+  )
+)
+```
+
+Summarise matches and verify that no participant has more rows after joining
+
+```{r}
+full_join(
+  count(dp, pid),
+  count(dat2, pid, name = "n1")
+) %>% 
+  replace_na(list(n = 0, n1 = 0)) %>% 
+  mutate(
+    dropped = n-n1, 
+    .keep = "used"
+  ) %>% 
+  summary
+```
+
+Then stack the tables and take out the already-joined data from the rest of the data
+
+```{r}
+dat <- bind_rows(
+  dat1, dat2
+)
+
+dp <- anti_join(dp, dat)
+dq <- anti_join(dq, dat)
+```
+
+## Summary
+
+Below, we summarise the results of the join. We could join a median of 94% of a participant's data, and are left with 109 participants for whom no joins were found.
+
+```{r}
+full_join(
+  count(dat, pid),
+  count(dp, pid, name = "n1")
+) %>% 
+  replace_na(list(n = 0, n1 = 0)) %>% 
+  mutate(joined_p = n / (n+n1)) %>% 
+  mutate(no_joins = n==0 & n1 > 0) %>% 
+  summary
 ```
