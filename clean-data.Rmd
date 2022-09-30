@@ -470,7 +470,6 @@ dat2 <- inner_join(
     x$prompt == y$prompt,
     between(x$timestamp, y$a, y$b)
   )
-)
 ```
 
 Summarise matches and verify that no participant has more rows after joining
@@ -513,3 +512,39 @@ full_join(
   mutate(no_joins = n==0 & n1 > 0) %>% 
   summary
 ```
+
+Above, we took out the non-survey events from the telemetry data to make processing easier & faster. Here we join the data back and rearrange
+
+```{r}
+dat <- bind_rows(d, dat) %>% 
+  arrange(pid, timestamp)
+rm(dat1, dat2, tmp)
+```
+
+# Complete data
+
+```{r}
+# library(naniar)
+set.seed(1)
+filter(dat, pid == sample(unique(dat$pid), 1)) %>%
+  mutate(
+    date = ymd(str_sub(timestamp, 1, 10)), 
+    wday = wday(timestamp, label = TRUE, week_start = 1, abbr = FALSE),
+    time = as_datetime(paste0("2022-01-01", str_sub(timestamp, -8, -1)))
+  ) %>% 
+  filter(event_name %in% c("player_logged_in", "exited_game")) %>% 
+  select()
+  ggplot(aes(time, event_name)) +
+  geom_point() +
+  geom_area(
+    data = . %>% filter(event_name %in% c("player_logged_in", "exited_game")),
+    aes(xmin = time)
+    ) +
+  scale_x_datetime(
+    "Time of day",
+    date_breaks = "2 hours", date_labels = "%H:%M"
+  ) +
+  facet_wrap("wday", ncol = 1) +
+  theme(axis.title.y = element_blank())
+```
+
