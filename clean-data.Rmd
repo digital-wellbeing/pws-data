@@ -32,17 +32,15 @@ con <- dbConnect(
   user = "postgres",
   password = "postgres"
 )
-# Exclude large data for development -- remove for final version
-# events <- c(
-#   "subtask_completed", 
-#   "game_saved"
-# )
+# Exclude some events
+events <- c(
+  # Not used
+  "player_inventory_item_added",
+  "player_consumed_item"
+  
+)
 d <- tbl(con, "pws") %>% 
-  # filter(!(EventName %in% events)) %>% 
-  collect()
-d_device <- tbl(con, "pws_device_info") %>% 
-  collect() %>% 
-  distinct()
+  filter(!(EventName %in% events))
 ```
 
 
@@ -61,6 +59,8 @@ d <- anti_join(
 )
 ```
 
+### Event types
+
 We only care about player events
 
 ```{r}
@@ -76,6 +76,17 @@ d <- d %>%
   select(-EntityType)
 ```
 
+### Variable types
+
+Convert character arrays to characters
+
+```{r}
+d <- d %>% 
+  mutate(across(starts_with("Current"), as.character)) %>% 
+  # Empty arrays to NA_character_
+  mutate(across(starts_with("Current"), ~na_if(., "{}")))
+```
+
 
 ## Adjust timestamps
 
@@ -83,6 +94,9 @@ We first find timezone offsets
 
 ```{r}
 # Find timezones
+d_device <- tbl(con, "pws_device_info") %>% 
+  collect() %>% 
+  distinct()
 offsets <- d_device %>% 
   select(
     EntityId,
@@ -122,8 +136,7 @@ Then join those offsets to the main data
 
 ```{r}
 d <- bind_rows(
-  d %>% 
-    mutate(across(starts_with("Current"), as.character)),
+  d,
   offsets %>% 
     mutate(EventName = "player_device_info")
 ) %>% 
