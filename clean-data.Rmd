@@ -13,6 +13,9 @@ library(DBI)
 library(dbplyr)
 library(lutz)
 library(tidyverse)
+opts_chunk$set(
+  message = FALSE
+)
 ```
 
 # PlayFab
@@ -30,12 +33,12 @@ con <- dbConnect(
   password = "postgres"
 )
 # Exclude large data for development -- remove for final version
-events <- c(
-  "subtask_completed", 
-  "game_saved"
-)
+# events <- c(
+#   "subtask_completed", 
+#   "game_saved"
+# )
 d <- tbl(con, "pws") %>% 
-  filter(!(EventName %in% events)) %>% 
+  # filter(!(EventName %in% events)) %>% 
   collect()
 d_device <- tbl(con, "pws_device_info") %>% 
   collect() %>% 
@@ -514,3 +517,30 @@ full_join(
   mutate(no_joins = n==0 & n1 > 0) %>% 
   summary
 ```
+
+# Create final data
+
+We replace the original participants IDs with other values
+
+```{r}
+set.seed(9845)
+new_pids <- do.call(expand.grid, rep(list(c(letters, LETTERS)), 3)) %>% 
+  mutate(id = paste0(Var1, Var2, Var3), .keep = "none") %>% 
+  pull() %>% sample(size = length(unique(d$pid)))
+new_pids <- distinct(d, pid) %>% 
+  mutate(new_pid = new_pids)
+d <- d %>% 
+  left_join(new_pids) %>% 
+  select(new_pid, everything(), -pid) %>% 
+  rename(pid = new_pid)
+```
+
+Then save the data to player-specific flat tables
+
+```{r}
+dir.create("data/csv", showWarnings = FALSE, recursive = TRUE)
+d %>% 
+  group_by(pid) %>% 
+  group_walk(~write_csv(.x, paste0("data/csv/", .y$pid, ".csv.gz")))
+```
+
