@@ -40,7 +40,8 @@ events <- c(
   
 )
 d <- tbl(con, "pws") %>% 
-  filter(!(EventName %in% events))
+  filter(!(EventName %in% events)) %>% 
+  collect()
 ```
 
 
@@ -86,6 +87,10 @@ d <- d %>%
   # Empty arrays to NA_character_
   mutate(across(starts_with("Current"), ~na_if(., "{}")))
 ```
+
+### Telemetry
+
+An early version of the game had a bug where `game_saved` events were being recorded too often. Here we re-apply the 10 second lower limit. todo
 
 
 ## Adjust timestamps
