@@ -553,12 +553,16 @@ d <- d %>%
   rename(pid = new_pid)
 ```
 
-Then save the data to player-specific flat tables
+Then save the data
 
 ```{r}
-dir.create("data/csv", showWarnings = FALSE, recursive = TRUE)
+library(arrow)
+dir.create("data/main", showWarnings = FALSE, recursive = TRUE)
 d %>% 
-  group_by(pid) %>% 
-  group_walk(~write_csv(.x, paste0("data/csv/", .y$pid, ".csv.gz")))
+  write_dataset(
+    "data/main", 
+    format = "parquet",
+    partitioning = "event_name"
+  )
 ```
 
