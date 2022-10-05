@@ -541,16 +541,13 @@ full_join(
 We replace the original participants IDs with other values
 
 ```{r}
-set.seed(9845)
-new_pids <- do.call(expand.grid, rep(list(c(letters, LETTERS)), 3)) %>% 
-  mutate(id = paste0(Var1, Var2, Var3), .keep = "none") %>% 
-  pull() %>% sample(size = length(unique(d$pid)))
-new_pids <- distinct(d, pid) %>% 
-  mutate(new_pid = new_pids)
 d <- d %>% 
-  left_join(new_pids) %>% 
-  select(new_pid, everything(), -pid) %>% 
-  rename(pid = new_pid)
+  left_join(
+    distinct(d, pid) %>% 
+      mutate(pid2 = sprintf("%05d", 1:n()))
+  ) %>% 
+  select(pid2, everything(), -pid) %>% 
+  rename(pid = pid2)
 ```
 
 Then save the data
@@ -561,7 +558,7 @@ dir.create("data/main", showWarnings = FALSE, recursive = TRUE)
 d %>% 
   write_dataset(
     "data/main", 
-    format = "parquet",
+    format = "arrow",
     partitioning = "event_name"
   )
 ```
