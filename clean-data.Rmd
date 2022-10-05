@@ -470,6 +470,8 @@ dat2 <- inner_join(
     x$prompt == y$prompt,
     between(x$timestamp, y$a, y$b)
   )
+) %>% 
+  select(-a, -b)
 ```
 
 Summarise matches and verify that no participant has more rows after joining
