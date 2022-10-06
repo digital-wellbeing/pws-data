@@ -40,8 +40,7 @@ events <- c(
   
 )
 d <- tbl(con, "pws") %>% 
-  filter(!(EventName %in% events)) %>% 
-  collect()
+  filter(!(EventName %in% events))
 ```
 
 
@@ -90,7 +89,38 @@ d <- d %>%
 
 ### Telemetry
 
-An early version of the game had a bug where `game_saved` events were being recorded too often. Here we re-apply the 10 second lower limit. todo
+An early version of the game had a bug where `game_saved` events were being recorded too often. Here we re-apply the 10 second lower limit. 
+
+```{r}
+# Create a separate local table of game_saved events
+# This is slower than doing in the database
+d2 <- filter(d, EventName == "game_saved")
+d <- anti_join(d, d2)
+d2 <- collect(d2)
+
+# Create a lag with NAs for participants' first observations
+d2 <- d2 %>% 
+  arrange(EntityId, Timestamp) %>% 
+  group_by(EntityId) %>% 
+  mutate(
+    lag = difftime(Timestamp, lag(Timestamp), units = "secs")
+  ) %>% 
+  ungroup()
+
+# Examine distribution of short lags
+d2 %>% 
+  filter(between(lag, 0, 25)) %>% 
+  ggplot(aes(lag)) +
+  geom_histogram()
+
+# Take out observations with lag too short
+d2 <- d2 %>% 
+  filter(lag > 9.9)
+
+# Join to main data and rearrange
+d <- bind_rows(d, d2) %>% 
+  arrange(EntityId, Timestamp)
+```
 
 
 ## Adjust timestamps
