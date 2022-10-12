@@ -96,22 +96,36 @@ An early version of the game had a bug where `game_saved` events were being reco
 # This is slower than doing in the database
 d2 <- filter(d, EventName == "game_saved")
 d <- anti_join(d, d2)
-d2 <- collect(d2)
+#d2 <- collect(d2)
 
 # Create a lag with NAs for participants' first observations
 d2 <- d2 %>% 
   arrange(EntityId, Timestamp) %>% 
   group_by(EntityId) %>% 
+  mutate(Timestamp_lag = lag(Timestamp)) %>% 
   mutate(
-    lag = difftime(Timestamp, lag(Timestamp), units = "secs")
+    lag = sql('EXTRACT(EPOCH FROM ("Timestamp" - "Timestamp_lag"))')
   ) %>% 
   ungroup()
+
+# Quick comparison to original R call
+# TODO: this can be removed
+lag_tmp <- d2 %>% 
+  select(Timestamp, Timestamp_lag, lag) %>% 
+  head(20) %>% 
+  collect()
+
+lag_tmp %>% 
+  mutate(lag_R = difftime(Timestamp, lag(Timestamp), units = "secs"))
 
 # Examine distribution of short lags
 d2 %>% 
   filter(between(as.numeric(lag), 0, 25)) %>% 
   ggplot(aes(lag)) +
-  geom_histogram(binwidth = .1)
+  geom_histogram(binwidth = .1) +
+  labs(x = "lag (sec)") +
+  scale_y_continuous(labels = comma)
+
 
 # Take out observations with lag too short, allowing for some noise
 d2 <- d2 %>% 
