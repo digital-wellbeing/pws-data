@@ -8,8 +8,10 @@ date: "2022"
 library(janitor)
 library(knitr)
 library(scales)
+library(readxl)
 library(lubridate)
 library(DBI)
+library(dtplyr)
 library(dbplyr)
 library(lutz)
 library(tidyverse)
@@ -18,9 +20,117 @@ opts_chunk$set(
 )
 ```
 
-# PlayFab
+```{r}
+# Load events x variables table from codebook
+events <- read_excel(
+  "data-raw/codebook.xlsx", 
+  sheet = "Telemetry - Events & Variables"
+) %>% 
+  fill(Event) %>% 
+  mutate(Event = snakecase::to_any_case(Event, "snake")) %>% 
+  select(EventName = Event, Variables)
+```
+
+# Qualtrics
 
 ## Load data
+
+```{r}
+readRenviron(".env") # Read files from common OneDrive path
+dq <- list.files(
+  paste0(Sys.getenv("ONEDRIVE_PATH"), "data-raw/qualtrics/"),
+  full.names = TRUE
+) %>% 
+  read_csv(
+    col_types = cols_only(
+      entityId = col_character(),
+      timeStamp = col_character(),
+      age = col_integer(),
+      gender = col_character(),
+      promptCategory = col_character(),
+      response = col_double()  # Throws warnings for 'none' responses
+    )
+  )
+# Verify that only problem is response='none'
+problems() %>% 
+  distinct(col, expected, actual)
+
+# Remove test accounts
+dq <- dq %>% 
+  filter(
+    !(entityId %in% c(
+      "1b4893d8239b65417ea746c92db9c1adc686e8a1", 
+      "47d03dc7c44a9e0a39ba3b5de3650b8f6e41a1d8", 
+      "3086fcd6630a9c61d84884d56e49d34f87127b7d", 
+      "785f413cb080eeac412538dc6424f240feb5b239", 
+      "cc0458b60500702da2faf44e8af870795d7d9b52"))
+  )
+
+# Remove broken responses
+dq <- dq %>% 
+  drop_na(timeStamp)
+
+# convert to datetimes here
+dq <- dq %>% 
+  mutate(timeStamp = as_datetime(timeStamp))
+```
+
+todo: what to do with people who have repeated age/gender responses? For now I am taking out people with more than two and keep the first responses.
+```{r}
+# Save demographics in a separate table
+ids_qualtrics <- dq %>% 
+  filter(is.na(promptCategory)) %>% 
+  distinct(entityId, age, gender) %>% 
+  add_count(entityId) %>% 
+  filter(n <= 2) %>% 
+  distinct(entityId, age, gender)
+# Drop rows where demographics were reported
+dq <- dq %>% 
+  drop_na(promptCategory) %>% 
+  select(-age, -gender)
+# d_person %>% add_count(entityId) %>% filter(n > 1) %>% arrange(entityId) %>% view
+```
+
+### Remove faulty responses
+
+The qualtrics data contains (massively) repeated responses; cases where for some reason the same response was being sent/recorded many times. Not only are these responses physically impossible, they will make the non-equi joins below impossible. These may also have occurred due to cached responses, which would not be found in the PlayFab data. For example:
+
+```{r}
+dq %>% 
+  add_count(entityId, promptCategory, response, name = "repeats") %>% 
+  filter(repeats == max(repeats))
+```
+
+We therefore apply a criterion to the Qualtrics data where subsequent responses from the same participant must be separated by at least one minute.
+
+```{r}
+dq <- dq %>% 
+  arrange(entityId, timeStamp) %>% 
+  lazy_dt() %>% 
+  group_by(entityId) %>% 
+  mutate(
+    lag = difftime(timeStamp, lag(timeStamp), units = "secs")
+  ) %>% 
+  ungroup() %>% 
+  collect()
+dq %>% 
+  filter(lag < 60 * 60) %>% 
+  ggplot(aes(lag/60)) +
+  scale_x_continuous(
+    "Lag from previous response (minutes)",
+    breaks = extended_breaks(9)
+  ) +
+  scale_y_continuous(expand = expansion(c(0, .1))) +
+  geom_histogram(bins = 100)
+dq %>% 
+  mutate(lag_less = lag < 60) %>% 
+  tabyl(lag_less)
+dq <- dq %>% 
+  filter(lag >= 60) %>% 
+  select(-lag)
+```
+
+# PlayFab
 
 ```{r}
 # Connect to local database
@@ -32,62 +142,214 @@ con <- dbConnect(
   user = "postgres",
   password = "postgres"
 )
-# Exclude some events
-events <- c(
-  # Not used
-  "player_inventory_item_added",
-  "player_consumed_item"
-  
-)
-d <- tbl(con, "pws") %>% 
-  filter(!(EventName %in% events))
 ```
 
+## IDs
 
-## Remove unnecessary data
-
-### Clear data requested
-
-Completely remove data from people who requested it
+We have three person identifier variables across two tables. Here, we match the IDs and keep only ones that exist in both data. We then create a new ID for all participants to add to both datasets.
 
 ```{r}
-d <- anti_join(
-  d,
-  d %>% 
-    filter(EventName == "clear_data_requested") %>% 
-    distinct(EntityId)
-)
-```
-
-### Event types
-
-We only care about player events
-
-```{r}
-d <- d %>% 
-  filter(
-    EntityType == "player",
-    !(EventName %in% c(
-      "player_added_title", 
-      "player_created", 
-      "player_linked_account"
-    ))
+ids_playfab <- tbl(con, "pws") %>% 
+  filter(EventName %in% c("study_prompt_answered", "mood_reported")) %>% 
+  distinct(EntityId, OxfordStudyEntityId) %>% 
+  collect() %>% 
+  drop_na(OxfordStudyEntityId)
+ids <- ids_playfab %>% 
+  inner_join(
+    distinct(ids_qualtrics, entityId), 
+    by = join_by(
+      x$OxfordStudyEntityId == y$entityId
+    ),
+    keep = TRUE
   ) %>% 
-  select(-EntityType)
+  mutate(pid = sprintf("%05d", 1:n()))
+
+# Drop withdrawn participants'
+ids <- anti_join(
+  ids,
+  tbl(con, "pws") %>% 
+  filter(EventName == "clear_data_requested") %>% 
+    distinct(EntityId) %>% 
+    collect(),
+)
+
+# Replace all IDs with the new one
+# Inner join ensures keeping only people with data in both tables
+dq <- dq %>% 
+  inner_join(distinct(ids, entityId, pid)) %>% 
+  select(-entityId)
+ids_qualtrics <- ids_qualtrics %>% 
+  inner_join(distinct(ids, entityId, pid)) %>% 
+  select(-entityId)
 ```
 
-### Variable types
+## Timezone offsets
 
-Convert character arrays to characters
+We then find the timezone offsets to use in adjusting the playfab timestamps.
 
 ```{r}
-d <- d %>% 
-  mutate(across(starts_with("Current"), as.character)) %>% 
-  # Empty arrays to NA_character_
-  mutate(across(starts_with("Current"), ~na_if(., "{}")))
+# Find timezones
+offsets <- tbl(con, "pws_device_info") %>% 
+  select(
+    EntityId,
+    Timestamp,
+    Longitude,
+    Latitude
+  ) %>% 
+  distinct() %>% 
+  collect() %>% 
+  mutate(
+    tz = tz_lookup_coords(Latitude, Longitude, method = "accurate")
+  )
+
+# In hits with multiple timezones, pick first
+offsets <- offsets %>% 
+  mutate(
+    tz = if_else(
+      str_detect(tz, ";"), 
+      str_split_fixed(tz, ";", 2)[1],
+      tz
+    )
+  )
+
+# This is slow so do only for unique timezone-date pairs
+tmp <- offsets %>% 
+  mutate(date = ymd(str_sub(Timestamp, 1, 10))) %>%
+  distinct(date, tz) %>%
+  mutate(
+    offset = map2_dbl(date, tz, ~tz_offset(.x, .y)$utc_offset_h)
+  )
+offsets <- offsets %>% 
+  mutate(date = ymd(str_sub(Timestamp, 1, 10))) %>% 
+  left_join(tmp) %>% 
+  select(-c(date, Longitude, Latitude, tz))
+rm(tmp)
+
+# Use new pids
+offsets <- offsets %>% 
+  inner_join(distinct(ids, EntityId, pid)) %>% 
+  relocate(pid, 1) %>% 
+  select(-EntityId)
 ```
 
-### Telemetry
+## Operations in database
+
+We then process the playfab data in the database with dbplyr
+
+```{r}
+# Load data for valid participants
+d <- tbl(con, "pws") %>% 
+  filter(EventName == "mood_reported") %>% 
+  inner_join(distinct(ids, EntityId, pid), copy = TRUE) %>% 
+  # Keep only new pid
+  select(-EntityId, -OxfordStudyEntityId)
+  
+# Keep only relevant events
+d <- inner_join(d, distinct(events, EventName), copy = TRUE)
+
+# Cleaning
+d <- d %>% 
+  # mood_reported events are always wellbeing reports
+  mutate(
+    LastStudyPromptType = ifelse(
+      EventName == "mood_reported", 
+      "Wellbeing", 
+      LastStudyPromptType
+    ),
+    # The study_prompt_skipped event is actually study_prompt_answered where the response is missing
+    EventName = ifelse(
+      EventName == "study_prompt_skipped", 
+      "study_prompt_answered", 
+      EventName
+    )
+    # OxfordStudyLocalTimeStamp = as_datetime(OxfordStudyLocalTimeStamp)
+  )
+```
+
+### Adjust timestamps
+
+We then adjust the timestamps by appending the main table with the offset variable, then order by timestamp so that we can use the offsets for each following row (and preceding if no prior offsets existed).
+
+todo: How can this be done in the database? Currently errors with:
+```
+Error: Failed to prepare query: ERROR:  operator does not exist: - timestamp with time zone
+LINE 35: ...SE 1 END) OVER (ORDER BY -CAST("pid" AS NUMERIC), -"Timestam...
+HINT:  No operator matches the given name and argument type. You might need to add an explicit type cast.
+```
+
+```{r}
+# Append the offsets table to the main table
+d <- rows_append(
+  d %>% mutate(offset = NA),
+  offsets %>% 
+    mutate(EventName = "player_device_info"),
+  copy = TRUE
+)
+d <- d %>%
+  # Order by person and time so that offsets are filled in temporal order by person
+  # todo: this doesn't work
+  window_order(pid=as.numeric(pid), Timestamp) %>%
+  fill(offset, .direction = "down") %>% 
+  fill(offset, .direction = "up") %>% 
+  ungroup()
+
+# Create a new timestamp reflecting local time
+d <- d %>% 
+  mutate(timestamp = Timestamp + offset*3600) %>% 
+  rename(timestamp_utc = Timestamp)
+
+# We can then remove the `player_device_info` events.
+d <- d %>% 
+  filter(EventName != "player_device_info")
+```
+
+## Split to event type tables
+
+Move to Duckdb tables by event name, saving only variables relevant to that event.
+
+```{r}
+library(duckdb)
+duck <- dbConnect(
+  duckdb(), 
+  dbdir = "data-raw/playfab.duckdb", 
+  read_only = FALSE
+)
+# These are no longer needed
+removed_vars <- c("OxfordStudyEntityId", "EntityId", "Timestamp")
+for (e in unique(events$EventName)) {
+  print(e)
+  x <- d %>% 
+    # Pick this event
+    filter(EventName == e) %>% 
+    # And only variables collected at that event
+    select(
+      filter(
+        events, 
+        EventName == e, 
+        !(Variables %in% removed_vars)
+      ) %>% 
+        pull(Variables)
+    ) %>% 
+    collect() %>% 
+    # Convert character arrays to characters
+    mutate(across(starts_with("Current"), as.character)) %>% 
+    # Empty arrays to NA_character_
+    mutate(across(starts_with("Current"), ~na_if(., "{}")))
+  
+  # Save to duckdb event table
+  dbWriteTable(
+    duck, e, x,
+    overwrite = FALSE, 
+    append = FALSE
+  )
+  
+}
+# dbDisconnect(duck, shutdown = TRUE)
+```
+
+
+
+## Telemetry
 
 An early version of the game had a bug where `game_saved` events were being recorded too often. Here we re-apply the 10 second lower limit. 
 
@@ -138,248 +400,6 @@ rm(d2)
 ```
 
 
-## Adjust timestamps
-
-We first find timezone offsets
-
-```{r}
-# Find timezones
-d_device <- tbl(con, "pws_device_info") %>% 
-  collect() %>% 
-  distinct()
-offsets <- d_device %>% 
-  select(
-    EntityId,
-    Timestamp,
-    Longitude,
-    Latitude
-  ) %>% 
-  mutate(
-    tz = tz_lookup_coords(Latitude, Longitude, method = "accurate")
-  )
-
-# In hits with multiple timezones, pick first
-offsets <- offsets %>% 
-  mutate(
-    tz = if_else(
-      str_detect(tz, ";"), 
-      str_split_fixed(tz, ";", 2)[1],
-      tz
-    )
-  )
-
-# This is slow so do only for unique timezone-date pairs
-tmp <- offsets %>% 
-  mutate(date = ymd(str_sub(Timestamp, 1, 10))) %>%
-  distinct(date, tz) %>%
-  mutate(
-    offset = map2_dbl(date, tz, ~tz_offset(.x, .y)$utc_offset_h)
-  )
-offsets <- offsets %>% 
-  mutate(date = ymd(str_sub(Timestamp, 1, 10))) %>% 
-  left_join(tmp) %>% 
-  select(-c(date, Longitude, Latitude, tz))
-rm(tmp)
-```
-
-Then join those offsets to the main data
-
-```{r}
-d <- bind_rows(
-  d,
-  offsets %>% 
-    mutate(EventName = "player_device_info")
-) %>% 
-  arrange(EntityId, Timestamp)
-rm(offsets)
-```
-
-Fill offsets to player's following events, until the next offset. Then do it again but fill up to fill any remaining rows.
-
-```{r}
-d <- d %>% 
-  group_by(EntityId) %>% 
-  fill(offset, .direction = "downup") %>% 
-  ungroup()
-```
-
-Create a new timestamp reflecting local time
-
-```{r}
-d <- d %>% 
-  mutate(timestamp = Timestamp + offset*3600) %>% 
-  rename(timestamp_utc = Timestamp)
-```
-
-We can then remove the `player_device_info` events.
-
-```{r}
-d <- d %>% 
-  filter(EventName != "player_device_info")
-```
-
-## Cleaning
-
-### Person IDs
-
-We have two person identifiers `EntityId` (exists on all rows) and `OxfordStudyEntityId` (doesn't exist on all rows). Only the latter exists in the survey data, so we fill it to every row, and remove the unnecessary identifier.
-
-```{r}
-d <- d %>% 
-  group_by(EntityId) %>% 
-  fill(OxfordStudyEntityId, .direction = "downup") %>% 
-  ungroup() %>% 
-  select(-EntityId)
-```
-
-### Events
-
-The study_prompt_skipped event is actually study_prompt_answered where the response is missing
-
-```{r}
-d <- d %>% 
-  mutate(
-    EventName = if_else(
-      EventName == "study_prompt_skipped", 
-      "study_prompt_answered", 
-      EventName
-    )
-  )
-```
-
-mood_reported events are always wellbeing reports
-
-```{r}
-distinct(d, EventName, LastStudyPromptType)
-d <- d %>% 
-  mutate(
-    LastStudyPromptType = if_else(
-      EventName == "mood_reported", 
-      "Wellbeing", 
-      LastStudyPromptType
-    )
-  )
-```
-
-### Variable types
-
-```{r}
-d <- d %>% 
-  mutate(OxfordStudyLocalTimeStamp = as_datetime(OxfordStudyLocalTimeStamp))
-```
-
-### Duplicated rows
-
-Some rows are duplicated; we only keep unique rows
-
-```{r}
-d <- distinct(d)
-```
-
-# Qualtrics
-
-## Load data
-
-```{r}
-readRenviron(".env") # Read files from common OneDrive path
-dq <- list.files(
-  paste0(Sys.getenv("ONEDRIVE_PATH"), "data-raw/qualtrics/"),
-  full.names = TRUE
-) %>% 
-  read_csv(
-    col_types = cols_only(
-      entityId = col_character(),
-      timeStamp = col_character(),
-      age = col_integer(),
-      gender = col_character(),
-      promptCategory = col_character(),
-      response = col_double()  # Throws warnings for 'none' responses
-    )
-  )
-# Verify that only problem is response='none'
-problems() %>% 
-  distinct(col, expected, actual)
-```
-
-## Cleaning
-
-```{r}
-# Save demographics in a separate table
-d_person <- dq %>% 
-  filter(is.na(promptCategory)) %>% 
-  distinct(entityId, age, gender)
-# Drop rows where demographics were reported
-dq <- dq %>% 
-  drop_na(promptCategory) %>% 
-  select(-age, -gender)
-
-```
-
-Timestamps are read as strings or it errs on many rows, convert to datetimes here.
-
-```{r}
-dq <- dq %>% 
-  mutate(timeStamp = as_datetime(timeStamp))
-```
-
-There are data without a timestamp -- these are faulty responses between game and APIs. We remove those here.
-
-```{r}
-dq <- dq %>% 
-  drop_na(timeStamp)
-```
-
-We then remove test accounts' data, these were for internal testing purposes
-
-```{r}
-dq <- dq %>% 
-  filter(
-    !(entityId %in% c(
-      "1b4893d8239b65417ea746c92db9c1adc686e8a1", 
-      "47d03dc7c44a9e0a39ba3b5de3650b8f6e41a1d8", 
-      "3086fcd6630a9c61d84884d56e49d34f87127b7d", 
-      "785f413cb080eeac412538dc6424f240feb5b239", 
-      "cc0458b60500702da2faf44e8af870795d7d9b52"))
-  )
-```
-
-### Remove faulty responses
-
-The qualtrics data contains (massively) repeated responses; cases where for some reason the same response was being sent/recorded many times. Not only are these responses physically impossible, they will make the non-equi joins below impossible. These may also have occurred due to cached responses, which would not be found in the PlayFab data. For example:
-
-```{r}
-dq %>% 
-  add_count(entityId, promptCategory, response, name = "repeats") %>% 
-  filter(repeats == max(repeats))
-```
-
-We therefore apply a criterion to the Qualtrics data where subsequent responses from the same participant must be separated by at least one minute.
-
-```{r}
-dq <- arrange(dq, entityId, timeStamp)
-dq <- dq %>% 
-  group_by(entityId) %>% 
-  mutate(
-    lag = difftime(timeStamp, lag(timeStamp), units = "secs")
-  ) %>% 
-  ungroup()
-dq %>% 
-  filter(lag < 60 * 60) %>% 
-  ggplot(aes(lag/60)) +
-  scale_x_continuous(
-    "Lag from previous response (minutes)",
-    breaks = extended_breaks(9)
-  ) +
-  geom_histogram(bins = 100)
-dq %>% 
-  mutate(lag_less = lag < 60) %>% 
-  tabyl(lag_less)
-dq <- dq %>% 
-  filter(lag >= 60) %>% 
-  select(-lag)
-```
-
-
 # Join
 
 ## Harmonise names
@@ -406,21 +426,6 @@ dq <- dq %>%
     prompt = promptCategory
   )
 ```
-
-## Define participant
-
-In order for the data to be meaningful, participants must have data in both tables
-
-```{r}
-before <- length(unique(d$pid))
-d <- inner_join(
-  d,
-  distinct(dq, pid)
-)
-after <- length(unique(d$pid))
-```
-
-We removed `r before-after` players with telemetry only.
 
 ## Perform join
 
