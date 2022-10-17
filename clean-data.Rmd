@@ -270,13 +270,6 @@ d <- d %>%
 
 We then adjust the timestamps by appending the main table with the offset variable, then order by timestamp so that we can use the offsets for each following row (and preceding if no prior offsets existed).
 
-todo: How can this be done in the database? Currently errors with:
-```
-Error: Failed to prepare query: ERROR:  operator does not exist: - timestamp with time zone
-LINE 35: ...SE 1 END) OVER (ORDER BY -CAST("pid" AS NUMERIC), -"Timestam...
-HINT:  No operator matches the given name and argument type. You might need to add an explicit type cast.
-```
-
 ```{r}
 # Append the offsets table to the main table
 d <- rows_append(
@@ -287,11 +280,15 @@ d <- rows_append(
 )
 d <- d %>%
   # Order by person and time so that offsets are filled in temporal order by person
-  # todo: this doesn't work
-  window_order(pid=as.numeric(pid), Timestamp) %>%
+  mutate(
+    time_as_int = sql('cast(extract(epoch from "Timestamp") as integer)'),
+    pid_as_number = as.numeric(pid)
+  ) %>% 
+  window_order(pid_as_number, time_as_int) %>%
   fill(offset, .direction = "down") %>% 
   fill(offset, .direction = "up") %>% 
-  ungroup()
+  ungroup() %>% 
+  select(-pid_as_number, -time_as_int)
 
 # Create a new timestamp reflecting local time
 d <- d %>% 
