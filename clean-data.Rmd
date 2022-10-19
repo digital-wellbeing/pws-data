@@ -234,8 +234,6 @@ dq <- dq %>%
 ids_qualtrics <- ids_qualtrics %>% 
   inner_join(distinct(ids, entityId, pid)) %>% 
   select(-entityId)
-
-rm(ids_playfab, ids_qualtrics)
 ```
 
 ## Timezone offsets
@@ -606,7 +604,7 @@ tbl(duck, "mood_reported") %>% glimpse()
 tbl(duck, "player_logged_in") %>% glimpse()
 ```
 
-We have also saved them as compressed comma-separated tables:
+We have also saved them as compressed comma-separated tables
 
 ```{r}
 unique(events$EventName) %>% 
@@ -617,6 +615,21 @@ unique(events$EventName) %>%
   )
 
 read_csv("data/mood_reported.csv.gz") %>% head()
+```
+
+An additional table includes basic demographics
+
+```{r}
+ids_qualtrics <- ids_qualtrics %>% 
+  arrange(pid) %>% 
+  relocate(pid)
+
+dbWriteTable(
+  duck, "demographics", ids_qualtrics,
+  overwrite = TRUE, 
+  append = FALSE
+)
+write_csv(ids_qualtrics, "data/demographics.csv.gz")
 ```
 
 ```{r}
