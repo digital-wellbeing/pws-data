@@ -6,3 +6,6 @@
 data-raw/
 import.log
 .env
+*.html
+*_cache/
+*_files/
