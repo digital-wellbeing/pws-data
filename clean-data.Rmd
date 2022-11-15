@@ -4,6 +4,8 @@ output: html_document
 date: "2022"
 ---
 
+This notebook takes the raw data from the shared OneDrive directory and PostgreSQL database, and creates cleaned and merged outputs in `data/`. Therefore it is only intended to be run by the authors who have access to those data sources. If you feel like something is wrong and would need to run this code, please contact the authors.
+
 ```{r setup, include=FALSE}
 library(janitor)
 library(knitr)
@@ -15,11 +17,12 @@ library(dtplyr)
 library(dbplyr)
 library(duckdb)
 library(lutz)
+library(sf) # required but not loaded by lutz
 library(lubridate)
 library(tidyverse)
 opts_chunk$set(
   message = FALSE,
-  cache = TRUE,
+  cache = FALSE,
   eval = !file.exists("data/data.duckdb")  # Don't run anything if already done
 )
 readRenviron(".env") # Read OneDrive path for original files
@@ -50,12 +53,11 @@ duck <- dbConnect(
 ```{r}
 # Load events x variables table from codebook
 events <- read_excel(
-  paste0(Sys.getenv("ONEDRIVE_PATH"), "data-raw/codebook.xlsx"), 
-  sheet = "Telemetry - Events & Variables"
+  "data/codebook.xlsx", 
+  sheet = "Events & Variables"
 ) %>% 
-  fill(Event) %>% 
-  mutate(Event = snakecase::to_any_case(Event, "snake")) %>% 
-  select(EventName = Event, Variables)
+  fill(EventName) %>%
+  select(EventName, Variable)
 ```
 
 # Qualtrics
@@ -63,6 +65,7 @@ events <- read_excel(
 ## Load data
 
 ```{r}
+# Load Qualtrics data
 dq <- list.files(
   paste0(Sys.getenv("ONEDRIVE_PATH"), "data-raw/qualtrics/"),
   full.names = TRUE
@@ -101,20 +104,27 @@ dq <- dq %>%
   mutate(timeStamp = as_datetime(timeStamp))
 ```
 
-todo: what to do with people who have repeated age/gender responses? For now I am taking out people with more than two and keep the first responses.
+We then create a separate table of demographics. At the same time, we find and exclude people who responded to the demographics questions more than once. Responding more than once shouldn't be possible, so it indicates dishonest responding / participation.
+
 ```{r}
-# Save demographics in a separate table
 ids_qualtrics <- dq %>% 
   filter(is.na(promptCategory)) %>% 
   distinct(entityId, age, gender) %>% 
-  add_count(entityId) %>% 
-  filter(n <= 2) %>% 
-  distinct(entityId, age, gender)
+  add_count(entityId, sort = TRUE, name = "Demographics_responses")
+
+ids_qualtrics %>% 
+  distinct(entityId, age, gender, Demographics_responses) %>% 
+  count(Demographics_responses, name = "N people") %>% 
+  kable(caption = "Numbers of people responding to demographics X times")
+
+ids_qualtrics <- ids_qualtrics %>% 
+  filter(Demographics_responses == 1) %>% 
+  select(entityId, age, gender)
+
 # Drop rows where demographics were reported
 dq <- dq %>% 
   drop_na(promptCategory) %>% 
   select(-age, -gender)
-# d_person %>% add_count(entityId) %>% filter(n > 1) %>% arrange(entityId) %>% view
 ```
 
 ## Remove faulty responses
@@ -140,7 +150,7 @@ dq <- dq %>%
   ungroup() %>% 
   collect()
 dq %>% 
-  filter(lag < 60 * 60) %>% 
+  filter(lag < 60 * 30) %>% 
   ggplot(aes(lag/60)) +
   scale_x_continuous(
     "Lag from previous response (minutes)",
@@ -195,18 +205,22 @@ dq %>%
 
 # PlayFab
 
-Next, we use dbplyr to process the data in the db.
+Next, we use dbplyr to process the data in the PostgreSQL database.
 
 ## IDs
 
 We have three person identifier variables across two tables. Here, we match the IDs and keep only ones that exist in both data. We then create a new ID for all participants to add to both datasets.
 
 ```{r}
+# Get distinct entity IDs from playfab data
 ids_playfab <- tbl(con, "pws") %>% 
   filter(EventName %in% c("study_prompt_answered", "mood_reported")) %>% 
   distinct(EntityId, OxfordStudyEntityId) %>% 
   collect() %>% 
   drop_na(OxfordStudyEntityId)
+
+# Create a table of IDs that contains only IDs that exist in both Qualtrics and Playfab
+# At the same time, create an anonymous new ID for everyone
 ids <- ids_playfab %>% 
   inner_join(
     distinct(ids_qualtrics, entityId), 
@@ -221,7 +235,7 @@ ids <- ids_playfab %>%
 ids <- anti_join(
   ids,
   tbl(con, "pws") %>% 
-  filter(EventName == "clear_data_requested") %>% 
+    filter(EventName == "clear_data_requested") %>% 
     distinct(EntityId) %>% 
     collect(),
 )
@@ -312,6 +326,9 @@ d <- d %>%
       EventName
     )
   )
+
+distinct(d, EventName) %>% pull(EventName)
+filter(d, EventName == "game_exited")
 ```
 
 # Save tables
@@ -350,7 +367,7 @@ events <- events %>%
   bind_rows(
     tibble(
       EventName = c("study_prompt_answered", "mood_reported"),
-      Variables = "OxfordStudyLocalTimeStamp"
+      Variable = "OxfordStudyLocalTimeStamp"
     )
   ) %>% 
   arrange(EventName)
@@ -360,7 +377,7 @@ adjust_timestamp_and_save <- function(e) {
   message("Saving ", e)
   
   # Save only the variables relevant to this event
-  vars <- events[events$EventName == e, "Variables", drop = TRUE]
+  vars <- events[events$EventName == e, "Variable", drop = TRUE]
   
   # Pull table to R
   x <- d %>% 
@@ -532,7 +549,7 @@ join_summary %>%
 
 # Odd spikes indicate many people with very few observations
 join_summary %>% 
-  ggplot(aes(n_original, n_joined, col = joined_p %in% c(0, 0.5))) +
+  ggplot(aes(n_original, n_joined)) +
   geom_abline(slope = 1, size = .33, lty = 2) +
   xlab(
     "Number of survey rows in original playfab data"
@@ -540,7 +557,7 @@ join_summary %>%
   ylab(
     "Number of rows joined"
   ) +
-  geom_point(size = 1, alpha = .75) +
+  geom_point(size = 1, alpha = .75, shape = 1) +
   theme(aspect.ratio = 1, legend.position = "bottom")
 ```
 
@@ -604,7 +621,7 @@ tbl(duck, "mood_reported") %>% glimpse()
 tbl(duck, "player_logged_in") %>% glimpse()
 ```
 
-We have also saved them as compressed comma-separated tables
+We also save them as compressed comma-separated tables
 
 ```{r}
 unique(events$EventName) %>% 
