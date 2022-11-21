@@ -11,6 +11,7 @@ library(janitor)
 library(knitr)
 library(scales)
 library(readxl)
+library(janitor)
 library(DBI)
 library(data.table)
 library(dtplyr)
@@ -73,6 +74,7 @@ dq <- list.files(
   read_csv(
     col_types = cols_only(
       entityId = col_character(),
+      eventId = col_character(),
       timeStamp = col_character(),
       age = col_integer(),
       gender = col_character(),
@@ -96,8 +98,11 @@ dq <- dq %>%
   )
 
 # Remove broken responses
+# Data without timestamps
 dq <- dq %>% 
   drop_na(timeStamp)
+# Duplicated events (take first)
+dq <- distinct(dq, .keep_all = TRUE)
 
 # convert to datetimes here
 dq <- dq %>% 
@@ -127,7 +132,7 @@ dq <- dq %>%
   select(-age, -gender)
 ```
 
-## Remove faulty responses
+## Remove duplicated responses
 
 The qualtrics data contains (massively) repeated responses; cases where for some reason the same response was being sent/recorded many times. Not only are these responses physically impossible, they will make the non-equi joins below impossible. These may also have occurred due to cached responses, which would not be found in the PlayFab data. For example:
 
@@ -304,7 +309,9 @@ offsets <- distinct(offsets, pid, offset, .keep_all = TRUE)
 
 ## Load data and clean
 
-We then process the playfab data in the database with dbplyr
+We then process the playfab data in the database with dbplyr.
+
+Take out invalid participants and non-relevant events, and rename event where responses were skipped to the same name where they were responded.
 
 ```{r}
 # Load data for valid participants
@@ -327,9 +334,35 @@ d <- d %>%
     )
   )
 
-distinct(d, EventName) %>% pull(EventName)
-filter(d, EventName == "game_exited")
+d <- compute(d, name = "pws_2")
 ```
+
+Take out duplicated events by keeping only distinct event ids. Save results in a temporary table
+
+```{r}
+counts_all <- d %>% 
+  count(EventName) %>% 
+  collect()
+
+d <- d %>% 
+  distinct(EventName, pid, EventId, .keep_all = TRUE) %>% 
+  compute(name = "pws_distinct_events")
+
+counts_distinct_events <- d %>% 
+  count(EventName) %>% 
+  collect()
+
+left_join(
+  counts_all,
+  counts_distinct_events,
+  by = "EventName"
+) %>% 
+  mutate(n_duplicates_removed = n.x - n.y) %>% 
+  adorn_totals() %>% 
+  mutate(across(starts_with("n"), ~number(as.numeric(.), big.mark = ","))) %>% 
+  kable()
+```
+
 
 # Save tables
 
