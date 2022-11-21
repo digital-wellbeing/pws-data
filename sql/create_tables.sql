@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS pws (
 	  "OxfordStudyLocalTimeStamp" text,
 	  "OxfordStudyEventId" text,
     "EventName" text,
+    "EventId" text,
    	"EntityType" text, 
     "EntityId" text,
     "LevelProgressionAmount" real,
