@@ -54,7 +54,7 @@ duck <- dbConnect(
 ```{r}
 # Load events x variables table from codebook
 events <- read_excel(
-  "data/codebook.xlsx", 
+  "codebook.xlsx", 
   sheet = "Events & Variables"
 ) %>% 
   fill(EventName) %>%
