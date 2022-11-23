@@ -96,11 +96,17 @@ dq <- dq %>%
       "785f413cb080eeac412538dc6424f240feb5b239", 
       "cc0458b60500702da2faf44e8af870795d7d9b52"))
   )
+```
 
+Remove broken responses that didn't have timestamps, and any remaining duplicate rows
+
+```{r}
 # Remove broken responses
 # Data without timestamps
+cat("Missing timestamps:", sum(is.na(dq$timeStamp)), "\n")
 dq <- dq %>% 
   drop_na(timeStamp)
+
 # Duplicated events (take first)
 dq <- distinct(dq, .keep_all = TRUE)
 
@@ -217,12 +223,23 @@ Next, we use dbplyr to process the data in the PostgreSQL database.
 We have three person identifier variables across two tables. Here, we match the IDs and keep only ones that exist in both data. We then create a new ID for all participants to add to both datasets.
 
 ```{r}
-# Get distinct entity IDs from playfab data
+# Identify test accounts (participated before launch date)
+test_accounts <- tbl(con, "pws") %>% 
+  filter(EventName == "player_logged_in") %>% 
+  distinct(EntityId, Timestamp) %>% 
+  collect() %>% 
+  arrange(Timestamp) %>% 
+  filter(Timestamp < as_date("2022-08-18")) %>% 
+  pull(EntityId) %>% 
+  unique()
+
+# Get distinct entity IDs from playfab data, remove test accounts
 ids_playfab <- tbl(con, "pws") %>% 
   filter(EventName %in% c("study_prompt_answered", "mood_reported")) %>% 
   distinct(EntityId, OxfordStudyEntityId) %>% 
   collect() %>% 
-  drop_na(OxfordStudyEntityId)
+  drop_na(OxfordStudyEntityId) %>% 
+  filter(!(EntityId %in% test_accounts))
 
 # Create a table of IDs that contains only IDs that exist in both Qualtrics and Playfab
 # At the same time, create an anonymous new ID for everyone
