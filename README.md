@@ -6,6 +6,8 @@ This repository contains the cleaned data from the PowerWash Simulator study, an
   - Our scripts load the raw data from here and place it to `data/`
 - `data/`
   - The processed anonymous datasets -- openly available
+  
+The data are openly available under the [CC0 license](https://creativecommons.org/publicdomain/zero/1.0/).
 
 # Data description
 
@@ -18,7 +20,7 @@ The codebook has four tabs:
 - Definitions
   - Commonly used terms and their definitions
 - Events
-  - 16 PWS game play events that triggered data to be sent to the database, and their descriptions
+  - PWS game play events that triggered data (variables) to be sent to the database, and their descriptions
 - Variables
   - Names of variables collected at one or more Events, and their descriptions
 - Events & Variables
