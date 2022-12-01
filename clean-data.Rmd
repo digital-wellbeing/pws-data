@@ -115,24 +115,18 @@ dq <- dq %>%
   mutate(timeStamp = as_datetime(timeStamp))
 ```
 
-We then create a separate table of demographics. At the same time, we find and exclude people who responded to the demographics questions more than once. Responding more than once shouldn't be possible, so it indicates dishonest responding / participation.
+We then create a separate table of demographics. Some participants had more than one response to the demography questions. This could have happened due to a bug, or if the participant opted out and back in to the research version. For participants with duplicate demographics, we pick the first observation. (There are a few participants with very many responses, here we exclude those who responded to demographics over 10 times as this inidcates dishonest responding.)
 
 ```{r}
 ids_qualtrics <- dq %>% 
   filter(is.na(promptCategory)) %>% 
   distinct(entityId, age, gender) %>% 
-  add_count(entityId, sort = TRUE, name = "Demographics_responses")
+  add_count(entityId) %>% 
+  filter(n <= 10) %>% 
+  select(-n) %>% 
+  distinct(entityId, .keep_all = TRUE)
 
-ids_qualtrics %>% 
-  distinct(entityId, age, gender, Demographics_responses) %>% 
-  count(Demographics_responses, name = "N people") %>% 
-  kable(caption = "Numbers of people responding to demographics X times")
-
-ids_qualtrics <- ids_qualtrics %>% 
-  filter(Demographics_responses == 1) %>% 
-  select(entityId, age, gender)
-
-# Drop rows where demographics were reported
+# Drop rows from main data where demographics were reported
 dq <- dq %>% 
   drop_na(promptCategory) %>% 
   select(-age, -gender)
@@ -270,6 +264,35 @@ dq <- dq %>%
 ids_qualtrics <- ids_qualtrics %>% 
   inner_join(distinct(ids, entityId, pid)) %>% 
   select(-entityId)
+```
+
+We also add the player's country to the demographics table. If more than one country was observed for a player, we chose the first observation. For reasons of anonymity, we will not include the country if there were fewer than 10 participants from that country.
+
+```{r}
+# Create demographics table
+x <- tbl(con, "pws_device_info") %>% 
+  select(EntityId, Longitude, Latitude) %>% 
+  distinct(EntityId, Longitude, Latitude) %>% 
+  collect()
+x <- x %>% 
+  mutate(country = maps::map.where(x = Longitude, y = Latitude)) %>% 
+  separate(country, c("country", "subregion"), sep = ":", extra = "drop") %>% 
+  select(EntityId, country) %>% 
+  distinct(EntityId, .keep_all = TRUE)
+ids_qualtrics <- x %>% 
+  left_join(select(ids, EntityId, pid)) %>% 
+  select(pid, country) %>% 
+  right_join(ids_qualtrics)
+ids_qualtrics %>% 
+  count(country) %>% 
+  arrange(n) %>% 
+  mutate(country = str_glue("{country} (n = {n})")) %>% 
+  pull(country) %>% 
+  cat(sep = ", ")
+ids_qualtrics <- ids_qualtrics %>% 
+  add_count(country) %>% 
+  mutate(country = if_else(n < 10, NA_character_, country)) %>% 
+  select(-n)
 ```
 
 ## Timezone offsets
@@ -499,7 +522,7 @@ rm(d, con, offsets)
 
 We then join the qualtrics survey data to the telemetry data. We treat the PlayFab telemetry as the primary table, because i. it contains the rest of the data (not just survey events), and ii. the Qualtrics survey data has large numbers of duplicated responses (some bug in sending data from PWS to the Qualtrics API), and treating it as secondary makes it easier to remove the duplicates automatically.
 
-We work only on the survey event telemetry (because it is the only data that can join)
+We work only on the survey event telemetry (because it is the only data to join)
 
 ```{r}
 playfab_survey_data <- bind_rows(
@@ -600,14 +623,15 @@ join_summary %>%
 # Odd spikes indicate many people with very few observations
 join_summary %>% 
   ggplot(aes(n_original, n_joined)) +
-  geom_abline(slope = 1, size = .33, lty = 2) +
+  geom_abline(slope = 1, linewidth = .33, lty = 2) +
+  coord_cartesian(xlim = c(0, 100), ylim = c(0, 100)) +
   xlab(
     "Number of survey rows in original playfab data"
   ) +
   ylab(
     "Number of rows joined"
   ) +
-  geom_point(size = 1, alpha = .75, shape = 1) +
+  geom_point(size = 1) +
   theme(aspect.ratio = 1, legend.position = "bottom")
 ```
 
@@ -623,7 +647,6 @@ nrow(playfab_survey_data) - nrow(playfab_survey_data_joined)
 # This percentage is small
 (nrow(playfab_survey_data) - nrow(playfab_survey_data_joined)) / nrow(playfab_survey_data)
 ```
-
 
 ### Save
 
