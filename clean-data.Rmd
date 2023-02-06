@@ -55,7 +55,7 @@ duck <- dbConnect(
 # Load events x variables table from codebook
 events <- read_excel(
   "codebook.xlsx", 
-  sheet = "Events & Variables"
+  sheet = "Events"
 ) %>% 
   fill(EventName) %>%
   select(EventName, Variable)
@@ -183,7 +183,7 @@ dq %>%
   )
 ```
 
-The year 1444 data doesn't have appropriate months as is therefore completely off, whereas the 2565 data can be fixed by just adjusting the year
+The year 1444 data doesn't have appropriate months as is therefore completely off, whereas the 2565 data can be fixed by just adjusting the year. 
 
 ```{r}
 dq <- dq %>% 
@@ -206,7 +206,6 @@ dq %>%
     month = month(timeStamp, label = TRUE)
   )
 ```
-
 
 # PlayFab
 
@@ -377,6 +376,16 @@ d <- d %>%
 d <- compute(d, name = "pws_2")
 ```
 
+Count all events at this point
+
+```{r}
+playfab_orig_count <- d %>% 
+  count(EventName) %>% 
+  collect() %>% 
+  arrange(EventName)
+```
+
+
 Take out duplicated events by keeping only distinct event ids. Save results in a temporary table
 
 ```{r}
@@ -435,16 +444,6 @@ fix_game_saved_bug <- function(data) {
 ```
 
 ```{r}
-# Add common events for internal use (joining)
-events <- events %>% 
-  bind_rows(
-    tibble(
-      EventName = c("study_prompt_answered", "mood_reported"),
-      Variable = "OxfordStudyLocalTimeStamp"
-    )
-  ) %>% 
-  arrange(EventName)
-
 adjust_timestamp_and_save <- function(e) {
   
   message("Saving ", e)
@@ -669,44 +668,6 @@ playfab_survey_data_joined %>%
 
 The cleaned data with new IDs is now written in a local DuckDB database. It is split to tables per event, with each table only containing variables relevant to that event.
 
-Here are the number of rows in each table
-
-```{r}
-tmp <- events %>% 
-  distinct(EventName) %>% 
-  mutate(
-    rows = map_dbl(
-      EventName, 
-      ~tbl(duck, .x) %>% 
-        tally() %>% 
-        collect() %>% 
-        pull(n)
-      )
-  )
-tmp %>% 
-  mutate(rows = number(rows, big.mark = ","))
-```
-
-These tables are easily accessible
-
-```{r}
-tbl(duck, "mood_reported") %>% glimpse()
-tbl(duck, "player_logged_in") %>% glimpse()
-```
-
-We also save them as compressed comma-separated tables
-
-```{r}
-unique(events$EventName) %>% 
-  walk(
-    ~tbl(duck, .x) %>% 
-      collect() %>% 
-      write_csv(str_glue("data/{.x}.csv.gz"))
-  )
-
-read_csv("data/mood_reported.csv.gz") %>% head()
-```
-
 An additional table includes basic demographics
 
 ```{r}
@@ -720,6 +681,45 @@ dbWriteTable(
   append = FALSE
 )
 write_csv(ids_qualtrics, "data/demographics.csv.gz")
+```
+
+Here are the number of rows in each table
+
+```{r}
+events_final_count <- events %>% 
+  distinct(EventName) %>% 
+  mutate(
+    rows = map_dbl(
+      EventName, 
+      ~tbl(duck, .x) %>% 
+        tally() %>% 
+        collect() %>% 
+        pull(n)
+      )
+  )
+left_join(playfab_orig_count, events_final_count) %>% 
+  mutate(
+    n_lost = n - rows,
+    p_lost = percent(n_lost / n, .1)
+  )
+```
+
+These tables are easily accessible
+
+```{r}
+tbl(duck, "mood_reported") %>% glimpse()
+tbl(duck, "player_logged_in") %>% glimpse()
+```
+
+We also save them as compressed comma-separated tables
+
+```{r}
+unique(events$EventName) %>%
+  walk(
+    ~tbl(duck, .x) %>%
+      collect() %>%
+      write_csv(str_glue("data/{.x}.csv.gz"))
+  )
 ```
 
 ```{r}
