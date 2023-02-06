@@ -83,7 +83,7 @@ dq <- list.files(
     )
   )
 # Verify that only problem is response='none'
-problems() %>% 
+problems(dq) %>% 
   distinct(col, expected, actual)
 
 # Remove test accounts
@@ -103,7 +103,7 @@ Remove broken responses that didn't have timestamps, and any remaining duplicate
 ```{r}
 # Remove broken responses
 # Data without timestamps
-cat("Missing timestamps:", sum(is.na(dq$timeStamp)), "\n")
+cat("Missing timestamps:", number(sum(is.na(dq$timeStamp)), big.mark = ","), "\n")
 dq <- dq %>% 
   drop_na(timeStamp)
 
