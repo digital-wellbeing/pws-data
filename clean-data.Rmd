@@ -699,6 +699,7 @@ We also save them as compressed comma-separated tables
 
 ```{r write-all-csvs}
 c(unique(events$EventName), "demographics") %>%
+  .[-c("study_prompt_skipped", "clear_data_requested")] %>% 
   walk(
     ~tbl(duck, .x) %>%
       collect() %>%
