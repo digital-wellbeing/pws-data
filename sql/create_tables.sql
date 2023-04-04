@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS pws (
     "CurrentWasher" text,
     "CurrentExtension" text,
     "LastStudyPromptType" text,
+    "IsIdleInGame" boolean,
+    "IsInMenu" boolean,
+    "RewardId" text,
     "Timestamp" timestamp
 );
 CREATE TABLE pws_s3 AS 
