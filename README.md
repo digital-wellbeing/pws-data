@@ -1,5 +1,8 @@
 # PowerWash Simulator dataset
 
+- Download cleaned data at [ZENODO]
+- Preprint: [LINK]
+
 This repository contains the cleaned data from the PowerWash Simulator study, and the code used to clean the raw Qualtrics and PlayFab data.
 
 - `data-raw/` contains the raw data and is not publicly available
@@ -11,7 +14,7 @@ The data are openly available under the [CC0 license](https://creativecommons.or
 
 # Data description
 
-The dataset includes a Codebook (`data/codebook.xlsx`), the cleaned data in 16 tables separated by game play event type (`data/data.duckdb` / `data/<event-name>.csv.gz`), and a participant demographics table (`data/demographics.csv`, or the `demographics` table in the DuckDB database). The complete dataset is contained in a [DuckDB](https://duckdb.org/docs/api/r) database file (`data/data.duckdb`) with 16 tables named after the events. Those events are described in the Codebook. We also share the 16 tables as gzip compressed comma-separated value files in `data/<event-name>.csv.gz`.
+The dataset includes a codebook and the cleaned data as a DuckDB database dump (.csv files with code to read them back into a database).
 
 ## Codebook
 
