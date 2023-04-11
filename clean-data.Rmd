@@ -4,6 +4,8 @@ output: html_document
 date: "2022"
 ---
 
+# Preface
+
 This notebook takes the raw data from the shared OneDrive directory and PostgreSQL database, and creates cleaned and merged outputs in `data/`. Therefore it is only intended to be run by the authors who have access to those data sources. If you feel like something is wrong and would need to run this code, please contact the authors.
 
 ```{r setup, include=FALSE}
@@ -25,33 +27,14 @@ library(lubridate)
 library(tidyverse)
 opts_chunk$set(
   message = FALSE,
-  cache = FALSE,
-  eval = !file.exists("data/data.duckdb")  # Don't run anything if already done
+  cache = FALSE
 )
 readRenviron(".env") # Read OneDrive path for original files
 ```
 
-Local databases
+# Load events
 
-```{r db-connect}
-# Connect to local database with original PlayFab data
-con <- dbConnect(
-  Postgres(),
-  dbname = "postgres",
-  host = "localhost",
-  port = 5432,
-  user = "postgres",
-  password = "postgres"
-)
-
-# Create a local database for processed output data
-dir.create("data", FALSE)
-duck <- dbConnect(
-  duckdb(), 
-  dbdir = "data/data.duckdb", 
-  read_only = FALSE
-)
-```
+We load the events and their associated variables from the codebook
 
 ```{r events-load}
 # Load events x variables table from codebook
@@ -63,7 +46,27 @@ events <- read_excel(
   select(EventName, Variable)
 ```
 
+Here is a summary of what variables are saved for which events
+
+```{r}
+# Show events in some order and what variables are saved
+events %>% 
+  filter(Variable != "Timestamp") %>% 
+  pivot_wider(names_from = Variable, values_from = Variable, values_fn = ~length(.)) %>% 
+  mutate(
+    EventName = factor(
+      EventName,
+      levels = c("player_logged_in", "job_started", "job_resumed", "job_completed", "job_exited", "subtask_completed", "task_completed", "item_purchased", "study_reward_unlocked", "study_reward_claimed", "game_saved", "update_current_state", "exited_game", "study_prompt_answered", "mood_reported")
+    )
+  ) %>% 
+  arrange(EventName) %>% 
+  write_csv("events-ordered.csv")
+```
+
+
 # Qualtrics
+
+We then load and clean the Qualtrics data (survey responses)
 
 ## Load data
 
@@ -80,6 +83,7 @@ dq <- list.files(
       timeStamp = col_character(),
       age = col_integer(),
       gender = col_character(),
+      promptType = col_character(),
       promptCategory = col_character(),
       response = col_double()  # Throws warnings for 'none' responses
     )
@@ -100,6 +104,8 @@ dq <- dq %>%
   )
 ```
 
+## Remove broken responses
+
 Remove broken responses that didn't have timestamps, and any remaining duplicate rows
 
 ```{r qualtrics-remove-broken}
@@ -117,15 +123,32 @@ dq <- dq %>%
   mutate(timeStamp = as_datetime(timeStamp))
 ```
 
-We then create a separate table of demographics. Some participants had more than one response to the demography questions. This could have happened due to a bug, or if the participant opted out and back in to the research version. For participants with duplicate demographics, we pick the first observation. (There are a few participants with very many responses, here we exclude those who responded to demographics over 10 times as this inidcates dishonest responding.)
+There are some players in the data with improperly configured clocks such that the years are impossible. We remove those observations.
+
+```{r qualtrics-clock-example}
+tmp <- dq %>% 
+  count(
+    year = year(timeStamp),
+    month = month(timeStamp, label = TRUE)
+  )
+tmp
+tmp %>% 
+  filter(!(year %in% c(2022, 2023))) %>% 
+  summarise(sum(n))
+dq <- dq %>% 
+  filter(year(timeStamp) %in% c(2022, 2023))
+rm(tmp)
+```
+
+## Demographics
+
+We then create a separate table of demographics. Some participants had more than one response to the demography questions. This could have happened due to a bug, or if the participant opted out and back in to the research version. For participants with duplicate demographics, we pick the first observation.
 
 ```{r qualtrics-create-demographics}
-ids_qualtrics <- dq %>% 
+demographics <- dq %>% 
   filter(is.na(promptCategory)) %>% 
   distinct(entityId, age, gender) %>% 
-  add_count(entityId) %>% 
-  filter(n <= 10) %>% 
-  select(-n) %>% 
+  add_count(entityId, name = "n_demographics") %>% 
   distinct(entityId, .keep_all = TRUE)
 
 # Drop rows from main data where demographics were reported
@@ -134,116 +157,52 @@ dq <- dq %>%
   select(-age, -gender)
 ```
 
-## Remove duplicated responses
-
-The qualtrics data contains (massively) repeated responses; cases where for some reason the same response was being sent/recorded many times. Not only are these responses physically impossible, they will make the non-equi joins below impossible. These may also have occurred due to cached responses, which would not be found in the PlayFab data. For example:
-
-```{r qualtrics-example-duplicates}
-dq %>% 
-  add_count(entityId, promptCategory, response, name = "repeats") %>% 
-  filter(repeats == max(repeats))
-```
-
-We therefore apply a criterion to the Qualtrics data where subsequent responses from the same participant must be separated by at least one minute.
-
-```{r qualtrics-delete-duplicates}
-dq <- dq %>% 
-  arrange(entityId, timeStamp) %>% 
-  lazy_dt() %>% 
-  group_by(entityId) %>% 
-  mutate(
-    lag = difftime(timeStamp, lag(timeStamp), units = "secs")
-  ) %>% 
-  ungroup() %>% 
-  collect()
-dq %>% 
-  filter(lag < 60 * 30) %>% 
-  ggplot(aes(lag/60)) +
-  scale_x_continuous(
-    "Lag from previous response (minutes)",
-    breaks = extended_breaks(9)
-  ) +
-  scale_y_continuous(expand = expansion(c(0, .1))) +
-  geom_histogram(bins = 100)
-dq %>% 
-  mutate(lag_less = lag < 60) %>% 
-  tabyl(lag_less)
-dq <- dq %>% 
-  filter(lag >= 60) %>% 
-  select(-lag)
-```
-
-## Fix improperly configured clock data
-
-There are some players in the data with improperly configured clocks such that the years are impossible. 
-
-```{r qualtrics-clock-example}
-dq %>% 
-  count(
-    year = year(timeStamp),
-    month = month(timeStamp, label = TRUE)
-  )
-```
-
-The year 1444 data doesn't have appropriate months as is therefore completely off, whereas the 2565 data can be fixed by just adjusting the year. 
-
-```{r qualtrics-clock-fix}
-dq <- dq %>% 
-  filter(year(timeStamp) >= 2022) %>% 
-  mutate(
-    timeStamp = if_else(
-      year(timeStamp) >= 2565,
-      timeStamp - years(2565 - 2022),
-      timeStamp
-      )
-    )
-
-# This fixed it
-dq %>% 
-  count(
-    year = year(timeStamp),
-    month = month(timeStamp, label = TRUE)
-  )
-```
-
 # PlayFab
 
 Next, we use dbplyr to process the data in the PostgreSQL database.
+
+```{r}
+# Connect to local database with original PlayFab data
+con <- dbConnect(
+  Postgres(),
+  dbname = "postgres",
+  host = "localhost",
+  port = 5432,
+  user = "postgres",
+  password = "postgres"
+)
+```
+
 
 ## IDs
 
 We have three person identifier variables across two tables. Here, we match the IDs and keep only ones that exist in both data. We then create a new ID for all participants to add to both datasets.
 
 ```{r playfab-ids}
-# Identify test accounts (participated before launch date)
-test_accounts <- tbl(con, "pws") %>% 
-  filter(EventName == "player_logged_in") %>% 
-  distinct(EntityId, Timestamp) %>% 
-  collect() %>% 
-  arrange(Timestamp) %>% 
-  filter(Timestamp < as_date("2022-08-18")) %>% 
-  pull(EntityId) %>% 
-  unique()
-
-# Get distinct entity IDs from playfab data, remove test accounts
+# Get distinct entity IDs from playfab data
 ids_playfab <- tbl(con, "pws") %>% 
-  filter(EventName %in% c("study_prompt_answered", "mood_reported")) %>% 
+  filter(!(EventName %in% c("game_saved", "update_current_state", "subtask_completed"))) %>% 
   distinct(EntityId, OxfordStudyEntityId) %>% 
-  collect() %>% 
-  drop_na(OxfordStudyEntityId) %>% 
-  filter(!(EntityId %in% test_accounts))
+  collect()
+
+# Summary
+length(unique(ids_playfab$EntityId)) # Playfab IDs
+length(unique(demographics$entityId)) # Qualtrics IDs
+ids_playfab <- ids_playfab %>% 
+  drop_na(OxfordStudyEntityId)
+length(unique(ids_playfab$EntityId)) # Playfab IDs after dropping those without connecting ID
 
 # Create a table of IDs that contains only IDs that exist in both Qualtrics and Playfab
 # At the same time, create an anonymous new ID for everyone
 ids <- ids_playfab %>% 
   inner_join(
-    distinct(ids_qualtrics, entityId), 
+    distinct(demographics, entityId), 
     by = join_by(
       x$OxfordStudyEntityId == y$entityId
     ),
     keep = TRUE
   ) %>% 
-  mutate(pid = sprintf("%05d", 1:n()))
+  mutate(pid = paste0("p", 1:n()))
 
 # Drop withdrawn participants'
 ids <- anti_join(
@@ -259,7 +218,7 @@ ids <- anti_join(
 dq <- dq %>% 
   inner_join(distinct(ids, entityId, pid)) %>% 
   select(-entityId)
-ids_qualtrics <- ids_qualtrics %>% 
+demographics <- demographics %>% 
   inner_join(distinct(ids, entityId, pid)) %>% 
   select(-entityId)
 ```
@@ -277,20 +236,48 @@ x <- x %>%
   separate(country, c("country", "subregion"), sep = ":", extra = "drop") %>% 
   select(EntityId, country) %>% 
   distinct(EntityId, .keep_all = TRUE)
-ids_qualtrics <- x %>% 
+demographics <- x %>% 
   left_join(select(ids, EntityId, pid)) %>% 
   select(pid, country) %>% 
-  right_join(ids_qualtrics)
-ids_qualtrics %>% 
+  right_join(demographics)
+demographics %>% 
   count(country) %>% 
   arrange(n) %>% 
   mutate(country = str_glue("{country} (n = {n})")) %>% 
   pull(country) %>% 
   cat(sep = ", ")
-ids_qualtrics <- ids_qualtrics %>% 
-  add_count(country) %>% 
-  mutate(country = if_else(n < 10, NA_character_, country)) %>% 
-  select(-n)
+demographics <- demographics %>% 
+  add_count(country, name = "n_country") %>% 
+  mutate(country = if_else(n_country < 10, NA_character_, country)) %>% 
+  select(-n_country)
+```
+
+Add other participant summaries
+
+```{r}
+logins <- tbl(con, "pws") %>% 
+  filter(EventName == "player_logged_in") %>% 
+  distinct(EntityId, Timestamp) %>% 
+  collect() %>% 
+  arrange(EntityId, Timestamp)
+
+logins <- logins %>% 
+  add_count(EntityId, name = "logins") %>% 
+  filter(Timestamp %in% c(head(Timestamp, 1), tail(Timestamp, 1)), .by = EntityId) %>% 
+  mutate(login = factor(1:n(), levels = 1:2, labels = c("first_login", "last_login")), .by = EntityId) %>% 
+  pivot_wider(names_from = login, values_from = Timestamp)
+
+playfab_survey_data <- tbl(con, "pws") %>% 
+  filter(EventName %in% c("study_prompt_answered", "mood_reported")) %>% 
+  count(EntityId, name = "responses") %>% 
+  collect()
+
+# There are players in playfab_survey_data and logins that don't have qualtrics data
+demographics <- full_join(playfab_survey_data, logins) %>% 
+  left_join(select(ids, EntityId, pid)) %>% 
+  drop_na(pid) %>% 
+  right_join(demographics) %>% 
+  select(-EntityId)
 ```
 
 ## Timezone offsets
@@ -349,20 +336,20 @@ offsets <- distinct(offsets, pid, offset, .keep_all = TRUE)
 
 We then process the playfab data in the database with dbplyr.
 
-Take out invalid participants and non-relevant events, and rename event where responses were skipped to the same name where they were responded.
+- Filter out non-valid participants
+- Add new common `pid`
+- Remove unnecessary variables
+- Rename study_prompt_skipped
+- Remove unnecessary events
 
-```{r playfab-load-data}
-# Load data for valid participants
-d <- tbl(con, "pws") %>% 
+```{r}
+tbl(con, "pws") %>% 
   inner_join(distinct(ids, EntityId, pid), copy = TRUE) %>% 
-  # Keep only new pid
-  select(-EntityId, -OxfordStudyEntityId)
-  
-# Keep only relevant events
-d <- inner_join(d, distinct(events, EventName), copy = TRUE)
-
-# Cleaning
-d <- d %>% 
+  select(
+    all_of(
+      c("pid", "EventName", unique(events$Variable), "OxfordStudyLocalTimeStamp")
+    )
+  ) %>% 
   mutate(
     # study_prompt_skipped is study_prompt_answered where response is missing
     EventName = ifelse(
@@ -370,48 +357,10 @@ d <- d %>%
       "study_prompt_answered", 
       EventName
     )
-  )
-
-d <- compute(d, name = "pws_2")
-
-# Count all events at this point
-playfab_orig_count <- d %>% 
-  count(EventName) %>% 
-  collect() %>% 
-  arrange(EventName)
+  ) %>% 
+  inner_join(distinct(events, EventName), copy = TRUE) %>% 
+  compute("pws_2")
 ```
-
-
-Take out duplicated events by keeping only distinct event ids. Save results in a temporary table
-
-```{r playfab-duplicates-delete}
-counts_all <- d %>% 
-  count(EventName) %>% 
-  collect()
-
-d <- d %>% 
-  distinct(EventName, pid, EventId, .keep_all = TRUE) %>% 
-  compute(name = "pws_distinct_events")
-
-counts_distinct_events <- d %>% 
-  count(EventName) %>% 
-  collect()
-
-left_join(
-  counts_all,
-  counts_distinct_events,
-  by = "EventName"
-) %>% 
-  mutate(n_duplicates_removed = n.x - n.y) %>% 
-  adorn_totals() %>% 
-  mutate(across(starts_with("n"), ~number(as.numeric(.), big.mark = ","))) %>% 
-  kable()
-```
-
-
-# Save tables
-
-Next we write the tables to a local DuckDB database by event type. I use the events & variables pairing from the codebook to save appropriate variables with each event. 
 
 While the tables are in R we do two important operations:
 
@@ -434,12 +383,23 @@ fix_game_saved_bug <- function(data) {
     # Take out observations with lag too short, allowing for some noise
     # Do not take out rows where lag is missing (first observations)
     filter(lag > 9.95 | is.na(lag)) %>% 
-    select(-lag) %>% 
+    select(-lag, -Time_lag) %>% 
     collect()
 }
 ```
 
-```{r playfab-import-duckdb}
+Save to duckdb
+
+```{r}
+duck <- dbConnect(
+  duckdb(), 
+  dbdir = "data-raw/data.duckdb", 
+  read_only = FALSE
+)
+```
+
+
+```{r playfab-import-eventtable}
 adjust_timestamp_and_save <- function(e) {
   
   message("Saving ", e)
@@ -448,20 +408,18 @@ adjust_timestamp_and_save <- function(e) {
   vars <- events[events$EventName == e, "Variable", drop = TRUE]
   
   # Pull table to R
-  x <- d %>% 
+  x <- tbl(con, "pws_2") %>% 
     # Pick this event
     filter(EventName == e) %>% 
     # And only variables collected at that event + pid + EventName
     select(
       pid,
       EventName,
-      any_of(vars),
+      any_of(c(vars, "OxfordStudyLocalTimeStamp")),
     ) %>% 
-    lazy_dt() %>% 
-    # Convert character arrays to characters & empty arrays to NAs
-    mutate(across(starts_with("Current"), ~na_if(as.character(.), "{}"))) %>% 
     # There are duplicates of some rows, take out
-    distinct()
+    distinct() %>% 
+    collect()
   
   # These offsets
   y <- offsets %>% 
@@ -497,19 +455,18 @@ adjust_timestamp_and_save <- function(e) {
     x <- fix_game_saved_bug(x)
   }
   
-  # Save to duckdb event table
-  dbWriteTable(
-    duck, e, x,
-    overwrite = TRUE, 
-    append = FALSE
-  )
+  # Remove OxfordStudyLocalTimeStamp from all tables where it is not needed
+  if (!(e %in% c("mood_reported", "study_prompt_answered", "player_logged_in"))) {
+    x <- select(x, -OxfordStudyLocalTimeStamp)
+  }
+  
+  # Save to event table
+  dbWriteTable(conn = duck, name = e, x)
   
 }
 
-walk(unique(events$EventName), adjust_timestamp_and_save)
-
-dbDisconnect(con)
-rm(d, con, offsets)
+unique(events$EventName) %>% 
+  walk(adjust_timestamp_and_save)
 ```
 
 
@@ -517,12 +474,10 @@ rm(d, con, offsets)
 
 We then join the qualtrics survey data to the telemetry data. We treat the PlayFab telemetry as the primary table, because i. it contains the rest of the data (not just survey events), and ii. the Qualtrics survey data has large numbers of duplicated responses (some bug in sending data from PWS to the Qualtrics API), and treating it as secondary makes it easier to remove the duplicates automatically.
 
-We work only on the survey event telemetry (because it is the only data to join)
-
 ```{r playfab-subset-survey}
 playfab_survey_data <- bind_rows(
-  tbl(duck, "mood_reported") %>% 
-    collect() %>% 
+  tbl(duck, "mood_reported") %>%
+    collect() %>%
     # These are always wellbeing questions
     mutate(LastStudyPromptType = "Wellbeing"),
   tbl(duck, "study_prompt_answered") %>% 
@@ -544,7 +499,8 @@ playfab_survey_data_joined <- inner_join(
   by = join_by(
     x$pid == y$pid,
     x$LastStudyPromptType == y$promptCategory,
-    x$OxfordStudyLocalTimeStamp == y$timeStamp
+    x$OxfordStudyLocalTimeStamp == y$timeStamp,
+    x$EventName == y$promptType
     )
 )
 ```
@@ -557,7 +513,17 @@ However, the two timestamps do not match to the millisecond because of different
 
 We therefore do a non-equi join where the adjusted PF timestamp in x must be within some interval around the qualtrics timestamp for a row to match across x and y. 
 
-Above, we removed rows from qualtrics where the response was within 60 seconds of the previous one. Therefore we use an interval that extends a maximum of |59|s to each side. 
+```{r}
+dq <- dq %>% 
+  arrange(pid, timeStamp) %>% 
+  lazy_dt() %>% 
+  mutate(d = difftime(timeStamp, lag(timeStamp), units = "secs"), .by = c(pid, promptType)) %>% 
+  collect() %>% 
+  filter(d > 60 | is.na(d))
+```
+
+
+Above, we removed rows from qualtrics where the response was within 60 seconds of the previous one. Therefore we use an interval that extends a maximum of |55|s to each side. 
 
 ```{r join-by-adjusted-timestamp}
 # Join data that isn't already joined
@@ -574,17 +540,19 @@ playfab_survey_data_joined <- inner_join(
     by = join_by(
       pid,
       x$promptCategory == y$LastStudyPromptType,
+      x$promptType == y$EventName,
       x$timeStamp == y$OxfordStudyLocalTimeStamp
     )
   ) %>% 
     mutate(
-      a = timeStamp - seconds(59.99), 
-      b = timeStamp + seconds(59.99)
+      a = timeStamp - seconds(55), 
+      b = timeStamp + seconds(55)
     ),
   # Join by PID, prompt type, and playfab timestamp within qualtrics interval
   by = join_by(
     pid,
     x$LastStudyPromptType == y$promptCategory,
+    x$EventName == y$promptType,
     between(x$Time, y$a, y$b)
   )
 ) %>% 
@@ -632,10 +600,14 @@ join_summary %>%
 
 ### Save
 
-```{r save-joined-duckdb}
-# Overwrite survey tables in duckdb
+```{r save-joined-survey}
 playfab_survey_data_joined %>% 
-  select(-OxfordStudyLocalTimeStamp, -timeStamp) %>% 
+  select(
+    -OxfordStudyLocalTimeStamp,
+    -eventId,
+    -timeStamp,
+    -d
+  ) %>% 
   group_by(EventName) %>% 
   group_walk(
     ~dbWriteTable(
@@ -646,8 +618,6 @@ playfab_survey_data_joined %>%
     .keep = TRUE
   )
 ```
-
-# Summary
 
 In total this is how much data is lost
 
@@ -660,55 +630,54 @@ nrow(playfab_survey_data) - nrow(playfab_survey_data_joined)
 
 # This percentage is small
 (nrow(playfab_survey_data) - nrow(playfab_survey_data_joined)) / nrow(playfab_survey_data)
-
-events_final_count <- events %>% 
-  distinct(EventName) %>% 
-  mutate(
-    rows = map_dbl(
-      EventName, 
-      ~tbl(duck, .x) %>% 
-        tally() %>% 
-        collect() %>% 
-        pull(n)
-      )
-  )
-left_join(playfab_orig_count, events_final_count) %>% 
-  mutate(
-    n_lost = n - rows,
-    p_lost = percent(n_lost / n, .1)
-  )
 ```
 
-The cleaned data with new IDs is now written in a local DuckDB database. It is split to tables per event, with each table only containing variables relevant to that event.
+# Summary
 
-An additional table includes basic demographics
+The cleaned data with new IDs is now written in a local DuckDB database. It is split to tables per event, with each table only containing variables relevant to that event. An additional table includes basic demographics
 
 ```{r save-demographics}
-ids_qualtrics <- ids_qualtrics %>% 
+demographics <- demographics %>% 
   arrange(pid) %>% 
-  relocate(pid)
+  relocate(pid) %>% 
+  mutate(responses = as.integer(responses))
 
 dbWriteTable(
-  duck, "demographics", ids_qualtrics,
+  duck, "demographics", demographics,
   overwrite = TRUE, 
   append = FALSE
 )
 ```
 
-We also save them as compressed comma-separated tables
+We save the processed data as a duckDB database dump
 
-```{r write-all-csvs}
-c(unique(events$EventName), "demographics") %>%
-  .[-c("study_prompt_skipped", "clear_data_requested")] %>% 
-  walk(
-    ~tbl(duck, .x) %>%
-      collect() %>%
-      write_csv(str_glue("data/{.x}.csv.gz"))
-  )
+```{r}
+dbSendQuery(
+  duck,
+  "EXPORT DATABASE 'data' (FORMAT CSV, HEADER TRUE, DELIMITER ',');"
+)
+zip("data.zip", "data")
 ```
+
+Load this with
+
+```{r}
+out <- dbConnect(
+  duckdb(), 
+  dbdir = "delete-me.duckdb", 
+  read_only = FALSE
+)
+dbSendQuery(
+  out,
+  "IMPORT DATABASE 'data';"
+)
+dbListTables(out)
+```
+
 
 ```{r disconnect-duckdb}
 #| include: false
 dbDisconnect(duck, shutdown=TRUE)
+dbDisconnect(out, shutdown=TRUE)
 ```
 
