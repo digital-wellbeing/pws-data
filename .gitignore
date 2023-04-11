@@ -4,5 +4,12 @@
 .Ruserdata
 
 data-raw/
+data/
+data.zip
 import.log
 .env
+*.html
+*_cache/
+*_files/
+*.duckdb
+~$*

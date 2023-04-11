@@ -1,11 +1,35 @@
 # PowerWash Simulator dataset
 
-This repository contains the cleaned data from the PowerWash Simulator study.
+- Download cleaned data at [ZENODO]
+- Preprint: [LINK]
 
-- `data-raw/` is not publicly available
+This repository contains the cleaned data from the PowerWash Simulator study, and the code used to clean the raw Qualtrics and PlayFab data.
+
+- `data-raw/` contains the raw data and is not publicly available
   - Our scripts load the raw data from here and place it to `data/`
 - `data/`
   - The processed anonymous datasets -- openly available
+  
+The data are openly available under the [CC0 license](https://creativecommons.org/publicdomain/zero/1.0/).
+
+# Data description
+
+The dataset includes a codebook and the cleaned data as a DuckDB database dump (.csv files with code to read them back into a database).
+
+## Codebook
+
+The codebook has four tabs:
+
+- Definitions
+  - Commonly used terms and their definitions
+- Events
+  - PWS game play events that triggered data (variables) to be sent to the database, and their descriptions
+- Variables
+  - Names of variables collected at one or more Events, and their descriptions
+- Events & Variables
+  - Which variables were collected at which event
+
+# Cleaning the raw data [internal use]
 
 ## Parsing the raw playfab JSON files
 
@@ -50,12 +74,4 @@ CONTEXT:  JSON data, line 1: ...":{"SegmentDefinition":"[[{"SegmentAndDefinition
 
 ## Qualtrics data
 
-The data processing R script reads the users OneDrive location for the raw qualtrics data. Make sure this is defined properly in `.Renviron`. Also make sure there is only one file in the qualtrics directory. That should be exported from Qualtrics with Export -> Export as CSV, and make sure the "Export all fields" is selected. Can be just a .csv or compressed.
-
-## Cleaning
-
-tbd
-
-## Output
-
-tbd
+The data processing R script reads the user's OneDrive location for the raw qualtrics data. Make sure this is defined properly in `.env`. Also make sure there is only one file in the qualtrics directory. That should be exported from Qualtrics with Export -> Export as CSV, and make sure the "Export all fields" is selected. Can be just a .csv or compressed.
