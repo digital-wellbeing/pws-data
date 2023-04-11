@@ -659,25 +659,8 @@ dbSendQuery(
 zip("data.zip", "data")
 ```
 
-Load this with
-
-```{r}
-out <- dbConnect(
-  duckdb(), 
-  dbdir = "delete-me.duckdb", 
-  read_only = FALSE
-)
-dbSendQuery(
-  out,
-  "IMPORT DATABASE 'data';"
-)
-dbListTables(out)
-```
-
-
 ```{r disconnect-duckdb}
 #| include: false
 dbDisconnect(duck, shutdown=TRUE)
-dbDisconnect(out, shutdown=TRUE)
 ```
 
