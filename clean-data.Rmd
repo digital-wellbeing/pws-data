@@ -456,7 +456,7 @@ adjust_timestamp_and_save <- function(e) {
   }
   
   # Remove OxfordStudyLocalTimeStamp from all tables where it is not needed
-  if (!(e %in% c("mood_reported", "study_prompt_answered", "player_logged_in"))) {
+  if (!(e %in% c("mood_reported", "study_prompt_answered"))) {
     x <- select(x, -OxfordStudyLocalTimeStamp)
   }
   
