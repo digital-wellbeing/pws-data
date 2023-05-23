@@ -1,33 +1,30 @@
 # PowerWash Simulator dataset
 
-- Download cleaned data at [ZENODO]
-- Preprint: [LINK]
+- Download cleaned data at <https://dx.doi.org/10.17605/OSF.IO/WPEH6>
+- Preprint: not yet available
 
-This repository contains the cleaned data from the PowerWash Simulator study, and the code used to clean the raw Qualtrics and PlayFab data.
+This repository contains the code used to clean the raw Qualtrics and PlayFab data.
 
-- `data-raw/` contains the raw data and is not publicly available
-  - Our scripts load the raw data from here and place it to `data/`
-- `data/`
-  - The processed anonymous datasets -- openly available
-  
-The data are openly available under the [CC0 license](https://creativecommons.org/publicdomain/zero/1.0/).
+The cleaned data are openly available under [CC0 license](https://creativecommons.org/publicdomain/zero/1.0/).
 
 # Data description
 
-The dataset includes a codebook and the cleaned data as a DuckDB database dump (.csv files with code to read them back into a database).
+The dataset includes a codebook and the cleaned data as a DuckDB database dump (.csv files with code to read them back into a database). Here's an example way to read those data back into a DuckDB database. Assume you have the raw .csv files in a directory "data", then:
 
-## Codebook
+```r
+db <- dbConnect(
+  duckdb(), 
+  dbdir = "example-database.duckdb", 
+  read_only = FALSE
+)
+dbSendQuery(
+  db,
+  "IMPORT DATABASE 'data';"
+)
+dbListTables(db)
+```
 
-The codebook has four tabs:
-
-- Definitions
-  - Commonly used terms and their definitions
-- Events
-  - PWS game play events that triggered data (variables) to be sent to the database, and their descriptions
-- Variables
-  - Names of variables collected at one or more Events, and their descriptions
-- Events & Variables
-  - Which variables were collected at which event
+Users can also load the .csv files directly.
 
 # Cleaning the raw data [internal use]
 
