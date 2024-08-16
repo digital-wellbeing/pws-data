@@ -1,7 +1,7 @@
 # PowerWash Simulator dataset
 
 - Download cleaned data at <https://dx.doi.org/10.17605/OSF.IO/WPEH6>
-- Preprint: not yet available
+- Preprint: <https://osf.io/preprints/psyarxiv/kyn7g>
 
 This repository contains the code used to clean the raw Qualtrics and PlayFab data.
 
